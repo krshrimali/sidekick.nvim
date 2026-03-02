@@ -77,6 +77,9 @@ local defaults = {
         nav_down      = { "<c-j>", "nav_down"  , expr = true, desc = "navigate to the below window" },
         nav_up        = { "<c-k>", "nav_up"    , expr = true, desc = "navigate to the above window" },
         nav_right     = { "<c-l>", "nav_right" , expr = true, desc = "navigate to the right window" },
+        goto_file     = { "gf"   , "goto_file"        , mode = "n" , desc = "go to file under cursor" },
+        goto_file_h   = { "gh"   , "goto_file_hsplit" , mode = "n" , desc = "go to file in horizontal split" },
+        goto_file_v   = { "gv"   , "goto_file_vsplit" , mode = "n" , desc = "go to file in vertical split" },
       },
       ---@type fun(dir:"h"|"j"|"k"|"l")?
       --- Function that handles navigation between windows.

@@ -33,6 +33,7 @@ local defaults = {
   -- Work with AI cli tools directly from within Neovim
   cli = {
     watch = true, -- notify Neovim of file changes done by AI CLI tools
+    tab_scoped = false, -- when true, each tab will have its own CLI session instance
     ---@class sidekick.win.Opts
     win = {
       --- This is run when a new terminal is created, before starting it.

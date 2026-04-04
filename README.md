@@ -7,6 +7,15 @@ without leaving your editor.
 
 <img width="2311" height="1396" alt="image" src="https://github.com/user-attachments/assets/63a33610-9a8e-45e2-bbd0-b7e3a4fde621" />
 
+## Fork-specific features
+
+This fork adds the following features on top of [upstream](https://github.com/folke/sidekick.nvim):
+
+| Feature | Description | Config / Keymaps |
+|---|---|---|
+| **Go-to-file from terminal** | Jump to file paths (with line numbers and ranges) printed in the CLI terminal output. Parses formats like `path/file.rs:42:5`, `path/file.rs:10:20` (line range), and bare paths. Strips ANSI codes and resolves relative paths against the session's cwd. | `gf` (edit), `gh` (horizontal split), `gv` (vertical split) in normal mode inside the terminal |
+| **Tab-scoped CLI sessions** | Each Neovim tab gets its own independent CLI session. Toggling, showing, or sending context in one tab won't affect another tab's session. | `cli.tab_scoped = true` (default: `false`) |
+
 ## ✨ Features
 
 - **🤖 Next Edit Suggestions (NES) powered by Copilot LSP**
@@ -22,6 +31,7 @@ without leaving your editor.
   - 📝 **Prompt Library**: A library of pre-defined prompts for common tasks like explaining code, fixing issues, or writing tests.
   - 🔄 **Session Persistence**: Keep your CLI sessions alive with `tmux` and `zellij` integration.
   - 📂 **Automatic File Watching**: Automatically reloads files in Neovim when they are modified by AI tools.
+  - 🗂️ **Tab-Scoped Sessions**: Each Neovim tab can have its own independent CLI session with `tab_scoped = true`.
 
 - **🔌 Extensible and Customizable**
   - ⚙️ **Flexible Configuration**: Fine-tune every aspect of the plugin to your liking.
@@ -268,6 +278,7 @@ local defaults = {
   -- Work with AI cli tools directly from within Neovim
   cli = {
     watch = true, -- notify Neovim of file changes done by AI CLI tools
+    tab_scoped = false, -- when true, each tab will have its own CLI session instance
     ---@class sidekick.win.Opts
     win = {
       --- This is run when a new terminal is created, before starting it.
@@ -939,6 +950,20 @@ opts = {
 ### Do I need a GitHub Copilot subscription?
 
 Yes, but only for the **NES feature** (Next Edit Suggestions). The **AI CLI integration** works independently with any CLI tool (Claude, Gemini, etc.) and doesn't require Copilot.
+
+### Can I have separate CLI sessions per tab?
+
+Yes! Enable `tab_scoped` to give each Neovim tab its own independent CLI session:
+
+```lua
+opts = {
+  cli = {
+    tab_scoped = true,
+  },
+}
+```
+
+With this enabled, toggling the CLI in one tab won't affect another tab's session. Each tab spawns and manages its own instance. Context (e.g. file, selection) is also scoped to the current tab's windows.
 
 ### Can I use this without NES, just for CLI tools?
 

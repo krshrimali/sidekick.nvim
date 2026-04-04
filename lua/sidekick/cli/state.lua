@@ -76,7 +76,13 @@ function M.get(filter)
     -- if not attached, skip if another session with higher priority
     -- is running with overlapping pids
     local skip = false
-    if not s:is_attached() then
+
+    -- when tab_scoped, skip sessions that belong to a different tab
+    if Config.cli.tab_scoped and s.tabpage and s.tabpage ~= vim.api.nvim_get_current_tabpage() then
+      skip = true
+    end
+
+    if not skip and not s:is_attached() then
       for _, s2 in pairs(sessions) do
         if s2 ~= s and Util.overlaps(s2.pids or {}, s.pids or {}) and s2.priority > s.priority then
           skip = true

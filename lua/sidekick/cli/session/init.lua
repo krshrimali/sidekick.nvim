@@ -18,6 +18,7 @@ M._attached = {} ---@type table<string,sidekick.cli.Session>
 ---@field parent? sidekick.cli.Session
 ---@field mux_session? string
 ---@field mux_backend? string
+---@field tabpage? integer
 
 ---@alias sidekick.cli.session.Opts sidekick.cli.session.State|{cwd?:string,id?:string}
 
@@ -89,6 +90,9 @@ function M.new(state)
   self.backend = backend
   self.sid = M.sid({ tool = tool.name, cwd = self.cwd })
   self.id = self.id or self.sid
+  if Config.cli.tab_scoped and not self.tabpage then
+    self.tabpage = vim.api.nvim_get_current_tabpage()
+  end
   if meta ~= super and self.init then
     self:init()
   end
@@ -104,7 +108,11 @@ end
 function M.sid(opts)
   local tool = assert(opts and opts.tool, "missing tool")
   local cwd = M.cwd(opts)
-  return ("%s %s"):format(tool, vim.fn.sha256(cwd):sub(1, 16 - #tool))
+  local key = cwd
+  if Config.cli.tab_scoped then
+    key = key .. ":" .. vim.api.nvim_get_current_tabpage()
+  end
+  return ("%s %s"):format(tool, vim.fn.sha256(key):sub(1, 16 - #tool))
 end
 
 ---@param name string

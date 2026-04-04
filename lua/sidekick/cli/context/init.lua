@@ -191,11 +191,14 @@ function M.fn(name)
 end
 
 function M.ctx()
+  local all_wins = Config.cli.tab_scoped
+      and vim.api.nvim_tabpage_list_wins(vim.api.nvim_get_current_tabpage())
+    or vim.api.nvim_list_wins()
   ---@param w integer
   local wins = vim.tbl_filter(function(w)
     local buf = vim.api.nvim_win_get_buf(w)
     return vim.bo[buf].filetype ~= "sidekick_terminal"
-  end, vim.api.nvim_list_wins())
+  end, all_wins)
   table.sort(wins, function(a, b)
     return (vim.w[a].sidekick_visit or 0) > (vim.w[b].sidekick_visit or 0)
   end)

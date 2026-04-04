@@ -81,6 +81,17 @@ function M.setup()
   on(Config.nes.trigger.events, Util.debounce(M.update, Config.nes.debounce))
   on({ "BufEnter", "WinEnter" }, Util.debounce(did_focus, 10))
 
+  if Config.nes.diff.show == "cursor" then
+    on(
+      { "CursorMoved" },
+      Util.debounce(function()
+        if M.have() then
+          require("sidekick.nes.ui").update()
+        end
+      end, 50)
+    )
+  end
+
   if Config.nes.clear.esc then
     local ESC = vim.keycode("<Esc>")
     vim.on_key(function(_, typed)
@@ -133,9 +144,15 @@ function M.update()
   params.textDocument.version = vim.lsp.util.buf_versions[buf]
   params.context = { triggerKind = 2 }
 
+  local done = false
   ---@diagnostic disable-next-line: param-type-mismatch
-  local ok, request_id = client:request("textDocument/copilotInlineEdit", params, M._handler)
-  if ok and request_id then
+  local ok, request_id = client:request("textDocument/copilotInlineEdit", params, function(...)
+    done = true
+    M._handler(...)
+  end)
+  -- skip tracking if the request failed
+  -- or is already done (in-process syncronous response)
+  if ok and request_id and not done then
     M._requests[client.id] = request_id
   end
 end
@@ -183,12 +200,15 @@ end
 ---@param res {edits: sidekick.lsp.NesEdit[]}
 ---@type lsp.Handler
 function M._handler(err, res, ctx)
-  M._requests[ctx.client_id] = nil
-
   local client = vim.lsp.get_client_by_id(ctx.client_id)
   if err or not client then
     return
   end
+
+  if M._requests[ctx.client_id] ~= ctx.request_id then
+    return -- stale response from a cancelled request
+  end
+  M._requests[ctx.client_id] = nil
 
   M._edits = {}
 
@@ -247,7 +267,7 @@ function M._jump(pos)
       return
     end
     -- add to jump list
-    if Config.jump.jumplist then
+    if Config.nes.jumplist then
       vim.cmd("normal! m'")
     end
     vim.api.nvim_win_set_cursor(win, pos)

@@ -16,13 +16,24 @@ function M.render(edit)
 
   local from, to = edit.from, edit.to
 
-  local signs = Config.signs.enabled
+  local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+  local at_edit = vim.api.nvim_get_current_buf() == edit.buf and row >= from[1] and row <= to[1]
 
-  -- Add the sign at the first position
-  Util.set_extmark(edit.buf, Config.ns, from[1], 0, {
-    sign_text = signs and Config.signs.icon or nil,
-    sign_hl_group = signs and "SidekickSign" or nil,
-  })
+  local show_sign = Config.nes.signs or Config.nes.diff.show == "cursor"
+  local show_diff = Config.nes.diff.show == "always" or at_edit
+
+  if show_sign then
+    -- Add the sign at the first position
+    Util.set_extmark(edit.buf, Config.ns, from[1], 0, {
+      sign_text = Config.ui.icons.nes,
+      sign_hl_group = "SidekickSign",
+    })
+  end
+
+  if not show_diff then
+    return
+  end
+
   local rows = {} ---@type table<number, true>
   for _, hunk in ipairs(diff.hunks) do
     if not hunk.inline then

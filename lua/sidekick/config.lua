@@ -5,13 +5,6 @@ M.ns = vim.api.nvim_create_namespace("sidekick.ui")
 
 ---@class sidekick.Config
 local defaults = {
-  jump = {
-    jumplist = true, -- add an entry to the jumplist
-  },
-  signs = {
-    enabled = true, -- enable signs by default
-    icon = " ",
-  },
   nes = {
     ---@type boolean|fun(buf:integer):boolean?
     enabled = function(buf)
@@ -29,9 +22,13 @@ local defaults = {
     },
     ---@class sidekick.diff.Opts
     ---@field inline? "words"|"chars"|false Enable inline diffs
+    ---@field show? "always"|"cursor" `cursor` will only show the diff when the cursor is at the edit position.
     diff = {
       inline = "words",
+      show = "always",
     },
+    signs = true, -- show signs for next edit suggestions
+    jumplist = true, -- add an entry to the jumplist
   },
   -- Work with AI cli tools directly from within Neovim
   cli = {
@@ -66,7 +63,7 @@ local defaults = {
         hide_n        = { "q"    , "hide"      , mode = "n" , desc = "hide the terminal window" },
         hide_ctrl_q   = { "<c-q>", "hide"      , mode = "n" , desc = "hide the terminal window" },
         hide_ctrl_dot = { "<c-.>", "hide"      , mode = "nt", desc = "hide the terminal window" },
-        hide_ctrl_z   = { "<c-z>", "hide"      , mode = "nt", desc = "hide the terminal window" },
+        hide_ctrl_z   = { "<c-z>", "blur"      , mode = "nt", desc = "go back to the previous window without hiding the terminal" },
         prompt        = { "<c-p>", "prompt"    , mode = "t" , desc = "insert prompt or context" },
         stopinsert    = { "<c-q>", "stopinsert", mode = "t" , desc = "enter normal mode" },
         -- Navigate windows in terminal mode. Only active when:
@@ -101,27 +98,23 @@ local defaults = {
         size = 0.5, -- size of the split (0-1 for percentage)
       },
     },
+    --- Actual cli tool config is loaded from the runtime path `sk/cli/{tool}.lua` and merged with the config below.
+    --- For default configs, see https://github.com/folke/sidekick.nvim/tree/main/sk/cli
+    -- stylua: ignore
     ---@type table<string, sidekick.cli.Config|{}>
     tools = {
-      aider = { cmd = { "aider" } },
-      amazon_q = { cmd = { "q" } },
-      claude = { cmd = { "claude" } },
-      codex = { cmd = { "codex", "--enable", "web_search_request" } },
-      copilot = { cmd = { "copilot", "--banner" } },
-      crush = {
-        cmd = { "crush" },
-        -- crush uses <a-p> for its own functionality, so we override the default
-        keys = { prompt = { "<a-p>", "prompt" } },
-      },
-      cursor = { cmd = { "cursor-agent" } },
-      gemini = { cmd = { "gemini" } },
-      grok = { cmd = { "grok" } },
-      opencode = {
-        cmd = { "opencode" },
-        -- HACK: https://github.com/sst/opencode/issues/445
-        env = { OPENCODE_THEME = "system" },
-      },
-      qwen = { cmd = { "qwen" } },
+      aider    = {},
+      amazon_q = {},
+      claude   = {},
+      codex    = {},
+      copilot  = {},
+      crush    = {},
+      cursor   = {},
+      gemini   = {},
+      grok     = {},
+      opencode = {},
+      pi       = {},
+      qwen     = {},
     },
     --- Add custom context. See `lua/sidekick/context/init.lua`
     ---@type table<string, sidekick.context.Fn>
@@ -164,6 +157,7 @@ local defaults = {
   ui = {
     -- stylua: ignore
     icons = {
+      nes               = " ",
       attached          = " ",
       started           = " ",
       installed         = " ",
@@ -229,6 +223,7 @@ function M.setup(opts)
     M.validate("cli.win.layout", { "float", "left", "bottom", "top", "right" })
     M.validate("cli.mux.backend", { "tmux", "zellij" })
     M.validate("cli.mux.create", { "terminal", "window", "split" })
+    M.validate("nes.diff.show", { "always", "cursor" })
   end)
 end
 

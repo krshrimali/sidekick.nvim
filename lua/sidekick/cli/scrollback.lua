@@ -29,6 +29,11 @@ vim.on_key(function(key, typed)
   local session_id = vim.w[info.winid].sidekick_session_id
   local sb = session_id and M.scrollbacks[session_id]
   if sb then
+    -- When clicking from another window, let WinEnter restore terminal mode
+    -- instead of immediately opening scrollback.
+    if key == MOUSE_CLICK and not sb:is_focused() then
+      return
+    end
     sb:update({ open = true, win_pos = key == MOUSE_CLICK and { info.screenrow, info.screencol } or nil })
   end
 end)
@@ -114,6 +119,7 @@ function M:open(win_pos)
   if not text then
     return self:scroll(win_pos)
   end
+  terminal.normal_mode = true
 
   -- proper scrollback support
   text = text:gsub("\n$", "")

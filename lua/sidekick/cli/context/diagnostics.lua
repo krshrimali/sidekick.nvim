@@ -21,6 +21,8 @@ function M.get(ctx, opts)
 
   for _, d in ipairs(diags) do
     local severity = d.severity and vim.diagnostic.severity[d.severity] or "UNKNOWN"
+    local code = d.code and tostring(d.code) or nil
+    local source = d.source
     local lnum = (d.lnum or 0) + 1
     local col = d.col or 0
     local end_lnum = (d.end_lnum or d.lnum or 0) + 1
@@ -44,6 +46,16 @@ function M.get(ctx, opts)
           vt = {}
         end
         vim.list_extend(vt, t)
+      end
+
+      if source then
+        vt[#vt + 1] = { " " }
+        vt[#vt + 1] = { source, "Comment" }
+      end
+
+      if code then
+        vt[#vt + 1] = { " " }
+        vt[#vt + 1] = { code, "Special" }
       end
 
       local loc = Loc.get({

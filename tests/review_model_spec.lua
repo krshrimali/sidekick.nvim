@@ -311,6 +311,114 @@ describe("review.diff", function()
   end)
 end)
 
+describe("review.diff session rollup", function()
+  local fx ---@type sidekick.test.ReviewFixture
+
+  before_each(function()
+    fx = Fixture.setup()
+  end)
+  after_each(function()
+    fx.cleanup()
+  end)
+
+  --- Add a third turn that edits greet.lua again, on top of turn 2's change.
+  local function edit_again()
+    Fixture.append(fx, {
+      {
+        type = "user",
+        uuid = "x1",
+        timestamp = "2026-08-15T11:00:00.000Z",
+        message = { role = "user", content = "also pass log levels" },
+      },
+      {
+        type = "assistant",
+        uuid = "x2",
+        timestamp = "2026-08-15T11:00:05.000Z",
+        message = {
+          role = "assistant",
+          content = {
+            {
+              type = "tool_use",
+              id = "tx",
+              name = "Edit",
+              input = {
+                file_path = fx.file,
+                old_string = "  vim.notify('hi ' .. name)",
+                new_string = "  vim.notify('hi ' .. name, vim.log.levels.INFO)",
+              },
+            },
+          },
+        },
+      },
+      { type = "user", uuid = "x3", message = { role = "user", content = { { type = "tool_result", tool_use_id = "tx", content = "ok" } } } },
+    })
+    Fixture.write(fx.file, (Fixture.FILE_AFTER:gsub("vim%.notify%('hi ' %.%. name%)", "vim.notify('hi ' .. name, vim.log.levels.INFO)")))
+  end
+
+  it("reports each file once, however many turns touched it", function()
+    edit_again()
+    local turns = Model.load(fx.cwd).turns
+    assert.are.same(3, #turns)
+
+    local per_turn = 0
+    for _, t in ipairs(turns) do
+      per_turn = per_turn + #t.files
+    end
+    assert.are.same(3, per_turn) -- greet twice, brand once
+
+    local cum = Diff.session(turns)
+    assert.are.same(2, #cum)
+  end)
+
+  it("shows the final state, not an intermediate one", function()
+    edit_again()
+    local turns = Model.load(fx.cwd).turns
+    local greet
+    for _, d in ipairs(Diff.session(turns)) do
+      if d.rel:find("greet") then
+        greet = d
+      end
+    end
+    assert.is_false(greet.approx)
+
+    local adds, dels = {}, {}
+    for _, h in ipairs(greet.hunks) do
+      for _, l in ipairs(h.lines) do
+        if l.kind == "add" then
+          adds[#adds + 1] = l.text
+        elseif l.kind == "del" then
+          dels[#dels + 1] = l.text
+        end
+      end
+    end
+
+    -- the line turn 3 produced
+    assert.is_true(vim.tbl_contains(adds, "  vim.notify('hi ' .. name, vim.log.levels.INFO)"))
+    -- turn 2's version was superseded and must not appear as an addition
+    assert.is_false(vim.tbl_contains(adds, "  vim.notify('hi ' .. name)"))
+    -- but what the session actually removed is still reported
+    assert.is_true(vim.tbl_contains(dels, "  print('hi ' .. name)"))
+  end)
+
+  it("knows a file the session created started empty", function()
+    local turns = Model.load(fx.cwd).turns
+    local brand
+    for _, d in ipairs(Diff.session(turns)) do
+      if d.rel:find("brand") then
+        brand = d
+      end
+    end
+    assert.is_true(brand.created)
+    assert.is_false(brand.approx)
+    assert.are.same(0, brand.removed)
+  end)
+
+  it("is empty for a session that changed nothing", function()
+    local turns = Model.load(fx.cwd).turns
+    assert.are.same({}, Diff.session({ turns[1] }))
+  end)
+end)
+
 describe("review.thread", function()
   it("finds the tags a submitted review carried", function()
     local tags = Thread.submitted_tags("intro\n### [c1] a.lua:3\n### [c12] your response\n")

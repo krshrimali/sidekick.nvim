@@ -1043,6 +1043,26 @@ Comments are stored per **project**, not per session, so they survive narrowing.
 4. Press `r` on a thread to follow up — it becomes pending again, and the next
    submission carries the whole conversation so the agent has the context.
 
+### All changes
+
+A turn is the unit of *conversation*, not of change. A file edited across turns
+3, 5 and 7 has no single place showing what actually happened to it — but that
+cumulative diff is what you would look at before committing. Every session
+therefore carries an **All changes** entry above its turns:
+
+```text
+▾ Claude Code · 6daec8b3        10  3m
+  ▾ 󰦒 All changes           33 files
+       lua/sidekick/review/diff.lua   +473 -0
+       lua/sidekick/review/ui.lua    +1594 -0
+  ▸ #10 add a session rollup       3m
+```
+
+It is a turn as far as the rest of the review is concerned, so its files open
+as ordinary diffs and you can comment on them the same way. The diff runs from
+the file as it was when the session started to how it is now, so a line that a
+later turn replaced never shows up as an addition.
+
 ### Comments in the code
 
 A comment is invisible the moment you close the review — you open the file and

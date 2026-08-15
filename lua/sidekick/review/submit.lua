@@ -84,7 +84,12 @@ function M.render(comments, opts)
 
   local out = {} ---@type string[]
   local n = #comments
-  local subject = opts.turn and ("your response to `%s`"):format(opts.turn.title) or "your last response"
+  local subject = "your last response"
+  if opts.turn then
+    -- a rollup covers the whole session, not one reply
+    subject = opts.turn.idx == 0 and "all changes in this session"
+      or ("your response to `%s`"):format(opts.turn.title)
+  end
 
   if n > 0 then
     out[#out + 1] = ("Code review of %s — %d comment%s below."):format(subject, n, n == 1 and "" or "s")

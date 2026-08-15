@@ -49,6 +49,7 @@ end
 ---@field diffs table<string, sidekick.review.FileDiff[]>
 ---@field sessions sidekick.review.Source[]
 ---@field transcripts sidekick.review.Transcript[] every session in view, newest first
+---@field rollups table<string, sidekick.review.Turn> session id -> its cumulative change
 ---@field sidebar sidekick.review.Pane
 ---@field main sidekick.review.Pane
 ---@field footer sidekick.review.Pane
@@ -391,12 +392,19 @@ function UI:reload()
     return
   end
 
+  self.rollups = {}
   for _, tr in ipairs(self.transcripts) do
     -- reconstruction walks a single session's history, so scope it to one
     for _, turn in ipairs(tr.turns) do
       self.diffs[turn.id] = Diff.turn(tr.turns, turn)
     end
     require("sidekick.review.thread").sync(self.cwd, tr)
+
+    local rollup = M.rollup(tr)
+    if rollup then
+      self.rollups[tr.session] = rollup
+      self.diffs[rollup.id] = Diff.session(tr.turns)
+    end
   end
 
   -- keep the selection if it still exists, else fall back to the newest turn
@@ -411,6 +419,45 @@ function UI:reload()
       self.expanded[self.transcript.session] = true
     end
   end
+end
+
+--- A synthetic turn standing for everything a session changed.
+---
+--- A turn is the unit of conversation, not of change: a file edited across
+--- three turns has no single place showing what happened to it. Modelling the
+--- rollup as a turn means file selection, comments and viewed marks all work on
+--- it without a second code path.
+---@param tr sidekick.review.Transcript
+---@return sidekick.review.Turn?
+function M.rollup(tr)
+  local order, seen = {}, {} ---@type sidekick.review.FileChange[], table<string, boolean>
+  for _, turn in ipairs(tr.turns) do
+    for _, file in ipairs(turn.files) do
+      if not seen[file.path] then
+        seen[file.path] = true
+        order[#order + 1] = file
+      end
+    end
+  end
+  if #order == 0 then
+    return nil
+  end
+
+  local newest = tr.turns[#tr.turns]
+  return {
+    id = "rollup:" .. tr.session,
+    idx = 0, -- marks it as a rollup rather than a numbered turn
+    prompt = "",
+    title = "All changes",
+    ts = newest and newest.ts or 0,
+    blocks = {},
+    tools = {},
+    files = order,
+    session = tr.session,
+    cwd = tr.cwd,
+    provider = tr.provider,
+    pending = false,
+  }
 end
 
 --- The transcript a turn belongs to.
@@ -431,6 +478,7 @@ function UI:ctx(width)
   return {
     transcript = self.transcript,
     transcripts = self.transcripts,
+    rollups = self.rollups,
     session = self.session,
     store = self.store,
     expanded = self.expanded,
@@ -449,6 +497,11 @@ end
 ---@return sidekick.review.Turn?
 function UI:turn(turn_id)
   turn_id = turn_id or self.sel_turn
+  for _, rollup in pairs(self.rollups or {}) do
+    if rollup.id == turn_id then
+      return rollup
+    end
+  end
   for _, tr in ipairs(self.transcripts or {}) do
     for _, t in ipairs(tr.turns) do
       if t.id == turn_id then

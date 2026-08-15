@@ -40,6 +40,7 @@ local M = {}
 ---@field sel_key? string
 ---@field diffs table<string, sidekick.review.FileDiff[]> turn id -> diffs
 ---@field transcripts? sidekick.review.Transcript[] every session in view, newest first
+---@field rollups? table<string, sidekick.review.Turn> session id -> its cumulative change
 ---@field session? string set when narrowed to a single session
 ---@field sessions? sidekick.review.Source[] every session available for this cwd
 ---@field collapsed table<string, boolean> comment id -> explicitly collapsed
@@ -59,6 +60,7 @@ M.icons = {
   comment    = " ",
   reply      = "↳ ",
   threads    = "󰭻 ",
+  rollup     = "󰦒 ",
   pending    = "● ",
   sent       = "◍ ",
   resolved   = "✓ ",
@@ -258,19 +260,14 @@ function M.sidebar(ctx)
   local grouped = #transcripts > 1
   local indent = grouped and "  " or ""
 
-  for _, tr in ipairs(transcripts) do
-    if grouped then
-      session_header(tr)
-      if ctx.expanded[tr.session] ~= true then
-        goto continue
-      end
-    end
-
-  -- newest first: the turn you want to review is almost always the last one
-  for i = #tr.turns, 1, -1 do
-    local turn = tr.turns[i]
+  --- One turn row plus, when expanded, its response / threads / files.
+  --- A rollup renders through here too: it is a turn as far as the sidebar,
+  --- comments and viewed marks are concerned.
+  ---@param turn sidekick.review.Turn
+  local function turn_row(turn)
     local open = ctx.expanded[turn.id] == true
     local sel = ctx.sel_turn == turn.id
+    local rolled = turn.idx == 0
 
     local n_total, n_pending = 0, 0
     for _, c in ipairs(ctx.store:for_turn(turn.id)) do
@@ -280,8 +277,10 @@ function M.sidebar(ctx)
       end
     end
 
-    local when = M.ago(turn.ts)
-    local prefix = indent .. (open and M.icons.expanded or M.icons.collapsed) .. ("#%d "):format(turn.idx)
+    local when = rolled and "" or M.ago(turn.ts)
+    local prefix = indent
+      .. (open and M.icons.expanded or M.icons.collapsed)
+      .. (rolled and M.icons.rollup or ("#%d "):format(turn.idx))
     local badge = n_pending > 0 and (" %s%d"):format(M.icons.comment, n_pending)
       or (n_total > 0 and (" %s%d"):format(M.icons.comment, n_total) or "")
     -- a turn you have already ruled on should read as settled at a glance
@@ -291,10 +290,16 @@ function M.sidebar(ctx)
     elseif verdict == "changes" then
       badge = " " .. M.icons.changes .. badge
     end
-    if turn.pending then
+    if turn.pending and not rolled then
       badge = " " .. M.icons.pending_turn .. badge
     end
-    local avail = W - #prefix - vim.fn.strdisplaywidth(badge) - #when - 2
+    if rolled then
+      local n = #(ctx.diffs[turn.id] or {})
+      badge = badge .. (" %d file%s"):format(n, n == 1 and "" or "s")
+    end
+    -- widths are in display cells; byte lengths would under-count the room
+    -- available whenever the prefix carries a multi-byte icon
+    local avail = W - vim.fn.strdisplaywidth(prefix) - vim.fn.strdisplaywidth(badge) - #when - 2
     local title = trunc(turn.title, math.max(avail, 4))
     local text = prefix .. pad(title, math.max(avail, 4)) .. badge .. " " .. when
 
@@ -354,7 +359,9 @@ function M.sidebar(ctx)
         })
       end
 
-      child(Store.RESPONSE, M.icons.response, "Response", "", "SidekickReviewDim")
+      if not rolled then
+        child(Store.RESPONSE, M.icons.response, "Response", "", "SidekickReviewDim")
+      end
 
       -- conversations are easier to follow in one place than scattered through
       -- the diffs they are anchored to
@@ -390,6 +397,25 @@ function M.sidebar(ctx)
       end
     end
   end
+
+  for _, tr in ipairs(transcripts) do
+    if grouped then
+      session_header(tr)
+      if ctx.expanded[tr.session] ~= true then
+        goto continue
+      end
+    end
+
+    -- what the session did as a whole, before the turn-by-turn account of it
+    local rollup = (ctx.rollups or {})[tr.session]
+    if rollup then
+      turn_row(rollup)
+    end
+
+    -- newest first: the turn you want to review is almost always the last one
+    for i = #tr.turns, 1, -1 do
+      turn_row(tr.turns[i])
+    end
 
     ::continue::
   end
@@ -955,10 +981,64 @@ function M.threads(ctx, turn)
   return lines
 end
 
+--- Overview shown when a rollup is selected but no file within it is.
+---@param ctx sidekick.review.Ctx
+---@param turn sidekick.review.Turn
+---@return sidekick.review.Line[]
+function M.rollup_summary(ctx, turn)
+  local lines = {} ---@type sidekick.review.Line[]
+  local W = ctx.width
+  local diffs = ctx.diffs[turn.id] or {}
+
+  ---@param text string
+  ---@param hl? sidekick.review.HL[]
+  ---@param item? sidekick.review.Item
+  local function add(text, hl, item)
+    lines[#lines + 1] = { text = text, hl = hl, item = item }
+  end
+
+  local added, removed = 0, 0
+  for _, d in ipairs(diffs) do
+    added, removed = added + d.added, removed + d.removed
+  end
+
+  add("All changes in this session", { { 0, -1, "SidekickReviewTitle" } }, { kind = "header", turn = turn.id })
+  add((" %d file%s · +%d -%d"):format(#diffs, #diffs == 1 and "" or "s", added, removed), {
+    { 0, -1, "SidekickReviewDim" },
+  }, { kind = "header", turn = turn.id })
+  add(string.rep("─", W), { { 0, -1, "SidekickReviewSep" } }, { kind = "blank" })
+
+  if #diffs == 0 then
+    add(" nothing changed", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank" })
+    return lines
+  end
+
+  for _, d in ipairs(diffs) do
+    local stat = d.deleted and "deleted" or ("+%d -%d"):format(d.added, d.removed)
+    local name = M.path(d.rel, math.max(W - #stat - 4, 8))
+    local text = " " .. pad(name, math.max(W - #stat - 2, 8)) .. stat
+    add(text, {
+      { 0, #text - #stat, "SidekickReviewText" },
+      { #text - #stat, -1, d.deleted and "SidekickReviewDiffDelete" or "SidekickReviewStat" },
+    }, { kind = "file", turn = turn.id, key = d.path, file = d.path })
+  end
+
+  add("", nil, { kind = "blank" })
+  add(" <CR> open a file · this is the diff you would review before committing", {
+    { 0, -1, "SidekickReviewDim" },
+  }, { kind = "blank" })
+  return lines
+end
+
 ---@param ctx sidekick.review.Ctx
 ---@return sidekick.review.Line[]
 function M.main(ctx)
   local turn ---@type sidekick.review.Turn?
+  for _, rollup in pairs(ctx.rollups or {}) do
+    if rollup.id == ctx.sel_turn then
+      turn = rollup
+    end
+  end
   for _, tr in ipairs(ctx.transcripts or {}) do
     for _, t in ipairs(tr.turns) do
       if t.id == ctx.sel_turn then
@@ -979,6 +1059,10 @@ function M.main(ctx)
   end
   if ctx.sel_key == Store.THREADS then
     return M.threads(ctx, turn)
+  end
+  if turn.idx == 0 and (not ctx.sel_key or ctx.sel_key == Store.RESPONSE) then
+    -- a rollup is a set of changes, not a conversation: point at its files
+    return M.rollup_summary(ctx, turn)
   end
   if not ctx.sel_key or ctx.sel_key == Store.RESPONSE then
     return M.response(ctx, turn)

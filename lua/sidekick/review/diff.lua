@@ -368,6 +368,96 @@ function M.file(turns, turn, file)
   return ret
 end
 
+--- The cumulative change a whole session made to every file it touched.
+---
+--- A turn is the unit of *conversation*, not of change: a file edited across
+--- turns 3, 5 and 7 has no single place showing what actually happened to it.
+--- This is the diff you would look at before committing — from the file as it
+--- was when the session started, to how it is now.
+---@param turns sidekick.review.Turn[] oldest -> newest
+---@return sidekick.review.FileDiff[]
+function M.session(turns)
+  local order = {} ---@type string[]
+  local touched = {} ---@type table<string, sidekick.review.FileChange[]>
+
+  for _, turn in ipairs(turns) do
+    for _, file in ipairs(turn.files) do
+      if not touched[file.path] then
+        touched[file.path] = {}
+        order[#order + 1] = file.path
+      end
+      table.insert(touched[file.path], file)
+    end
+  end
+
+  local ret = {} ---@type sidekick.review.FileDiff[]
+  for _, path in ipairs(order) do
+    local files = touched[path]
+    local first, last = files[1], files[#files]
+    local states = M.reconstruct(turns, path)
+
+    -- oldest recorded "before" -> the file as it stands now
+    local before ---@type string?
+    if first.created then
+      -- a file this session created started empty, whatever happened to the
+      -- undo chain in between
+      before = ""
+    else
+      for _, turn in ipairs(turns) do
+        local st = states[turn.id]
+        if st then
+          before = st.before
+          break
+        end
+      end
+    end
+    local after = M.read(path)
+
+    ---@type sidekick.review.FileDiff
+    local diff = {
+      path = path,
+      rel = first.rel,
+      hunks = {},
+      added = 0,
+      removed = 0,
+      created = first.created,
+      deleted = last.deleted == true,
+      approx = false,
+      binary = false,
+      missing = after == nil,
+      filetype = vim.filetype.match({ filename = path }) or nil,
+    }
+
+    if diff.deleted then
+      diff.approx = true
+    elseif after and is_binary(path) then
+      diff.binary = true
+    elseif before and after then
+      diff.hunks = M.hunks(before, after)
+    else
+      -- the chain broke somewhere; per-edit hunks across every turn is still
+      -- an honest account of what the session did, just without line numbers
+      diff.approx = true
+      for _, file in ipairs(files) do
+        vim.list_extend(diff.hunks, M.raw_hunks(file))
+      end
+    end
+
+    for _, h in ipairs(diff.hunks) do
+      for _, l in ipairs(h.lines) do
+        if l.kind == "add" then
+          diff.added = diff.added + 1
+        elseif l.kind == "del" then
+          diff.removed = diff.removed + 1
+        end
+      end
+    end
+    ret[#ret + 1] = diff
+  end
+
+  return ret
+end
+
 --- Diff every file a turn touched.
 ---@param turns sidekick.review.Turn[]
 ---@param turn sidekick.review.Turn

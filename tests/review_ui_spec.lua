@@ -390,6 +390,7 @@ describe("review.ui", function()
     local reloaded = Store.get(fx.cwd)
     assert.are.same(1, #reloaded:all())
     assert.are.same("keep me", reloaded:all()[1].body)
+    assert.is_nil(vim.uv.fs_stat(reloaded.file .. ".tmp"))
   end)
 
   it("keeps state separate for cwd names with the same Claude encoding", function()

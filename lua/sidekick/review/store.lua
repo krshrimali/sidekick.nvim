@@ -130,13 +130,24 @@ function Store:save()
     Util.error("sidekick.review: failed to encode review state")
     return
   end
-  local fd = vim.uv.fs_open(self.file, "w", 420)
+  local tmp = self.file .. ".tmp"
+  local fd = vim.uv.fs_open(tmp, "w", 420)
   if not fd then
-    Util.error("sidekick.review: cannot write " .. self.file)
+    Util.error("sidekick.review: cannot write " .. tmp)
     return
   end
-  vim.uv.fs_write(fd, encoded, 0)
+  local written = vim.uv.fs_write(fd, encoded, 0)
   vim.uv.fs_close(fd)
+  if written ~= #encoded then
+    vim.uv.fs_unlink(tmp)
+    Util.error("sidekick.review: incomplete write to " .. tmp)
+    return
+  end
+  local ok_rename, err = vim.uv.fs_rename(tmp, self.file)
+  if not ok_rename then
+    vim.uv.fs_unlink(tmp)
+    Util.error("sidekick.review: cannot replace " .. self.file .. ": " .. tostring(err))
+  end
 end
 
 ---@param comment sidekick.review.Comment|{id?:string, status?:string, replies?:sidekick.review.Reply[]}

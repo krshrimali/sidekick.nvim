@@ -202,6 +202,23 @@ describe("review.diff", function()
     end
   end)
 
+  it("keeps unchanged lines as context in an approximate diff", function()
+    -- with no file to anchor to we lose line numbers, but not the shape of the
+    -- edit: listing every line twice (once removed, once added) would be noise
+    Fixture.write(fx.file, "something else entirely\n")
+    local tr = Model.load(fx.cwd)
+    local greet = Diff.turn(tr.turns, tr.turns[2])[1]
+    assert.is_true(greet.approx)
+    local kinds = {}
+    for _, h in ipairs(greet.hunks) do
+      for _, l in ipairs(h.lines) do
+        kinds[l.kind] = (kinds[l.kind] or 0) + 1
+      end
+    end
+    assert.are.same(3, kinds.add)
+    assert.are.same(2, kinds.del)
+  end)
+
   it("degrades instead of inventing line numbers when the file moved on", function()
     Fixture.write(fx.file, "something else entirely\n")
     local tr = Model.load(fx.cwd)

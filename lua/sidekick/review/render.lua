@@ -741,8 +741,10 @@ function M.diff(ctx, turn, diff)
   local syntax = syntax_index(diff)
   local srow = 0
 
-  for _, h in ipairs(diff.hunks) do
-    local hdr = ("@@ -%d,%d +%d,%d @@"):format(h.old_start, h.old_count, h.new_start, h.new_count)
+  for hi, h in ipairs(diff.hunks) do
+    -- an approximate diff has no line numbers to put in the header
+    local hdr = diff.approx and ("@@ recorded edit %d of %d @@"):format(hi, #diff.hunks)
+      or ("@@ -%d,%d +%d,%d @@"):format(h.old_start, h.old_count, h.new_start, h.new_count)
     add(hdr, { { 0, -1, "SidekickReviewHunk" } }, { kind = "hunk", turn = turn.id, file = diff.path })
 
     for _, l in ipairs(h.lines) do

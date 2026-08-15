@@ -264,22 +264,29 @@ function M.hunks(before, after)
   return ret
 end
 
---- Build hunks straight from the recorded edits, without line numbers.
---- Used when the file on disk no longer matches the transcript.
+--- Build hunks straight from the recorded edits.
+---
+--- Used when the file on disk no longer matches the transcript, so absolute
+--- line numbers are unknowable. The *shape* of each edit still is, though:
+--- diffing the recorded old against the recorded new keeps unchanged lines as
+--- context instead of listing every line twice, once as a deletion and once as
+--- an addition. Only the line numbers are dropped.
 ---@param file sidekick.review.FileChange
 ---@return sidekick.review.Hunk[]
 function M.raw_hunks(file)
   local ret = {} ---@type sidekick.review.Hunk[]
   for _, c in ipairs(file.changes) do
     local lines = {} ---@type sidekick.review.DiffLine[]
-    if c.old ~= "" then
-      for _, l in ipairs(to_lines(c.old)) do
-        lines[#lines + 1] = { kind = "del", text = l }
+    for _, hunk in ipairs(M.hunks(c.old, c.new)) do
+      for _, l in ipairs(hunk.lines) do
+        lines[#lines + 1] = { kind = l.kind, text = l.text }
       end
     end
-    if c.new ~= "" then
-      for _, l in ipairs(to_lines(c.new)) do
-        lines[#lines + 1] = { kind = "add", text = l }
+    if #lines == 0 and (c.old ~= "" or c.new ~= "") then
+      -- identical old/new produces no diff; show the content so the edit is
+      -- still visible rather than silently vanishing
+      for _, l in ipairs(to_lines(c.new ~= "" and c.new or c.old)) do
+        lines[#lines + 1] = { kind = "context", text = l }
       end
     end
     if #lines > 0 then

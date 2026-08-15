@@ -152,7 +152,13 @@ local defaults = {
   ---@class sidekick.review.Config
   review = {
     enabled = true,
-    width = 0.94, -- fraction of the screen used by the overlay
+    --- How the review is shown:
+    --- * `float` — an overlay; leaves your window layout untouched
+    --- * `tab`   — its own tabpage, like a full-screen editor for the review
+    --- * `split` — splits in the current tabpage
+    ---@type "float"|"tab"|"split"
+    layout = "float",
+    width = 0.94, -- fraction of the screen used by the overlay (float only)
     height = 0.9,
     sidebar_width = 38, -- columns for the turn/file tree
     -- number of context lines shown around each change
@@ -353,6 +359,20 @@ function M.set_hl()
     ReviewDiffDelete = "DiffDelete",
     ReviewDiffContext = "Normal",
     ReviewWarn = "DiagnosticWarn",
+    -- markdown prose in the response view
+    ReviewMdH1 = "@markup.heading.1.markdown",
+    ReviewMdH2 = "@markup.heading.2.markdown",
+    ReviewMdBold = "@markup.strong",
+    ReviewMdLink = "@markup.link",
+    ReviewMdCode = "@markup.raw.markdown_inline",
+    ReviewMdCodeBlock = "Normal",
+    ReviewMdFence = "Comment",
+    ReviewMdQuote = "@markup.quote",
+    ReviewMdBullet = "@markup.list",
+    -- threads
+    ReviewThreadCollapsed = "Comment",
+    ReviewAuthorYou = "Special",
+    ReviewAuthorAgent = "DiagnosticInfo",
   }
   for from, to in pairs(links) do
     vim.api.nvim_set_hl(0, "Sidekick" .. from, { link = to, default = true })

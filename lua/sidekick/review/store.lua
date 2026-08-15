@@ -50,6 +50,9 @@ M.VERSION = 1
 --- Key used for the "response" pseudo-file in `viewed`.
 M.RESPONSE = "@response"
 
+--- Key for the sidebar node that lists a turn's conversations.
+M.THREADS = "@threads"
+
 local cache = {} ---@type table<string, sidekick.review.Store>
 
 --- Where review state is written. Overridable so tests stay off the real one.

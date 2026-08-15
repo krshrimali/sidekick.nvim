@@ -3,6 +3,7 @@
 --- Everything here maps model data to `sidekick.review.Line[]`: text plus
 --- highlight ranges plus the item the line represents. No window or buffer API
 --- is touched, so the whole UI can be asserted on in tests.
+local Markdown = require("sidekick.review.markdown")
 local Store = require("sidekick.review.store")
 local Treesitter = require("sidekick.treesitter")
 
@@ -36,6 +37,8 @@ local M = {}
 ---@field sel_turn? string
 ---@field sel_key? string
 ---@field diffs table<string, sidekick.review.FileDiff[]> turn id -> diffs
+---@field collapsed table<string, boolean> comment id -> explicitly collapsed
+---@field expanded_threads table<string, boolean> comment id -> explicitly expanded
 ---@field width integer
 
 -- stylua: ignore
@@ -49,6 +52,7 @@ M.icons = {
   unviewed   = " ",
   comment    = " ",
   reply      = "↳ ",
+  threads    = "󰭻 ",
   pending    = "● ",
   sent       = "◍ ",
   resolved   = "✓ ",
@@ -133,7 +137,22 @@ local function pad(str, width)
   return w >= width and str or (str .. string.rep(" ", width - w))
 end
 
----@param icon string
+--- Inline markdown highlights (`code`, **bold**, links) for a line whose body
+--- starts at `offset`.
+---@param text string
+---@param offset integer
+---@param base string
+---@return sidekick.review.HL[]
+function M.inline_md(text, offset, base)
+  local body = text:sub(offset + 1)
+  local ret = {} ---@type sidekick.review.HL[]
+  for _, hl in ipairs(Markdown.inline(body, base)) do
+    ret[#ret + 1] = { hl[1] == 0 and offset or offset + hl[1], hl[2] == -1 and -1 or offset + hl[2], hl[3] }
+  end
+  return ret
+end
+
+---@param status string
 ---@return string
 local function status_icon(status)
   return M.icons[status] or M.icons.pending
@@ -149,8 +168,14 @@ end
 ---@param key string
 ---@return integer n_comments, integer n_pending, boolean viewed
 local function item_stats(ctx, turn, key)
-  local comments = key == Store.RESPONSE and ctx.store:for_turn(turn.id, { target = "response" })
-    or ctx.store:for_turn(turn.id, { target = "file", file = key })
+  local comments ---@type sidekick.review.Comment[]
+  if key == Store.THREADS then
+    comments = {} -- the node shows its own counts in the stat column
+  elseif key == Store.RESPONSE then
+    comments = ctx.store:for_turn(turn.id, { target = "response" })
+  else
+    comments = ctx.store:for_turn(turn.id, { target = "file", file = key })
+  end
   local pending = 0
   for _, c in ipairs(comments) do
     if c.status == "pending" then
@@ -251,15 +276,39 @@ function M.sidebar(ctx)
         if stat ~= "" then
           h[#h + 1] = { #t - #stat, -1, stat_hl }
         end
+        local kind = "file"
+        if key == Store.RESPONSE then
+          kind = "response"
+        elseif key == Store.THREADS then
+          kind = "threads"
+        end
         add(t, h, {
-          kind = key == Store.RESPONSE and "response" or "file",
+          kind = kind,
           turn = turn.id,
           key = key,
-          file = key ~= Store.RESPONSE and key or nil,
+          file = kind == "file" and key or nil,
         })
       end
 
       child(Store.RESPONSE, M.icons.response, "Response", "", "SidekickReviewDim")
+
+      -- conversations are easier to follow in one place than scattered through
+      -- the diffs they are anchored to
+      if n_total > 0 then
+        local open_n = 0
+        for _, c in ipairs(ctx.store:for_turn(turn.id)) do
+          if c.status ~= "resolved" then
+            open_n = open_n + 1
+          end
+        end
+        child(
+          Store.THREADS,
+          M.icons.threads,
+          ("Threads (%d)"):format(n_total),
+          open_n > 0 and ("%d open"):format(open_n) or "all resolved",
+          open_n > 0 and "SidekickReviewPending" or "SidekickReviewResolved"
+        )
+      end
 
       for _, d in ipairs(ctx.diffs[turn.id] or {}) do
         local stat = ("+%d -%d"):format(d.added, d.removed)
@@ -278,58 +327,138 @@ end
 -- Comment threads
 --------------------------------------------------------------------------------
 
---- Render a comment and its replies as an inline thread block.
+--- Should this thread render collapsed?
+---
+--- Resolved conversations fold away by default so a busy diff stays readable;
+--- anything still waiting on someone stays open. An explicit toggle wins.
+---@param ctx sidekick.review.Ctx
+---@param c sidekick.review.Comment
+---@return boolean
+function M.is_collapsed(ctx, c)
+  if ctx.expanded_threads and ctx.expanded_threads[c.id] then
+    return false
+  end
+  if ctx.collapsed and ctx.collapsed[c.id] then
+    return true
+  end
+  return c.status == "resolved"
+end
+
+--- One line describing where a comment is anchored.
+---@param c sidekick.review.Comment
+---@return string
+function M.location(c)
+  if c.target ~= "file" then
+    return "response"
+  end
+  local loc = c.rel or c.file or "?"
+  if c.lnum then
+    loc = c.end_lnum and c.end_lnum > c.lnum and ("%s:%d-%d"):format(loc, c.lnum, c.end_lnum)
+      or ("%s:%d"):format(loc, c.lnum)
+  end
+  return loc
+end
+
+--- Short status word shown in a thread header.
+---@param c sidekick.review.Comment
+---@return string, string highlight group
+local function status_label(c)
+  if c.status == "sent" then
+    return "awaiting reply", "SidekickReviewSent"
+  elseif c.status == "resolved" then
+    return "resolved", "SidekickReviewResolved"
+  end
+  return #c.replies > 0 and "needs another look" or "draft", "SidekickReviewPending"
+end
+
+--- Render a comment and its replies as a thread block.
+---
+--- A thread that has been round-tripped a few times gets long, and several of
+--- them inside one diff quickly drown the code. So a thread is a first class,
+--- collapsible unit: collapsed it is a single summary line, expanded it reads
+--- as a conversation with one labelled turn per message.
 ---@param c sidekick.review.Comment
 ---@param width integer
+---@param opts? {collapsed?:boolean, location?:boolean, selected?:boolean}
 ---@return sidekick.review.Line[]
-function M.thread(c, width)
+function M.thread(c, width, opts)
+  opts = opts or {}
   local lines = {} ---@type sidekick.review.Line[]
   local bar = "│ "
+  local label, label_hl = status_label(c)
+  local n = #c.replies
 
-  local status = c.status
-  local head = ("╭ %s[%s] you"):format(status_icon(status), c.id)
-  if status == "sent" then
-    head = head .. " · awaiting reply"
-  elseif status == "resolved" then
-    head = head .. " · resolved"
-  end
-  local head_hl = status == "pending" and "SidekickReviewPending"
-    or (status == "resolved" and "SidekickReviewResolved" or "SidekickReviewSent")
-  lines[#lines + 1] = {
-    text = head,
-    hl = { { 0, 2, "SidekickReviewCommentBorder" }, { 2, -1, head_hl } },
-    item = { kind = "comment", comment = c },
-  }
-
-  for _, l in ipairs(vim.split(c.body, "\n", { plain = true })) do
-    lines[#lines + 1] = {
-      text = bar .. l,
-      hl = { { 0, #bar, "SidekickReviewCommentBorder" }, { #bar, -1, "SidekickReviewComment" } },
-      item = { kind = "comment", comment = c },
-    }
+  ---@param text string
+  ---@param hl sidekick.review.HL[]
+  ---@param kind "comment"|"reply"
+  local function add(text, hl, kind)
+    lines[#lines + 1] = { text = text, hl = hl, item = { kind = kind, comment = c } }
   end
 
-  for _, r in ipairs(c.replies) do
-    local who = r.role == "claude" and "claude" or "you"
-    lines[#lines + 1] = {
-      text = ("%s%s%s"):format(bar, M.icons.reply, who),
-      hl = { { 0, #bar, "SidekickReviewCommentBorder" }, { #bar, -1, "SidekickReviewReplyHead" } },
-      item = { kind = "reply", comment = c },
-    }
-    for _, l in ipairs(vim.split(r.body, "\n", { plain = true })) do
-      lines[#lines + 1] = {
-        text = bar .. "  " .. l,
-        hl = { { 0, #bar, "SidekickReviewCommentBorder" }, { #bar, -1, "SidekickReviewReply" } },
-        item = { kind = "reply", comment = c },
-      }
+  if opts.collapsed then
+    -- one line: who started it, the gist, and how far along it is
+    local gist = (c.body:gsub("%s+", " "))
+    local head = ("%s%s[%s] "):format(M.icons.collapsed, status_icon(c.status), c.id)
+    local tail = n > 0 and ("  %d repl%s · %s"):format(n, n == 1 and "y" or "ies", label) or ("  %s"):format(label)
+    if opts.location then
+      tail = ("  %s"):format(M.location(c)) .. tail
+    end
+    local room = math.max(width - vim.fn.strdisplaywidth(head) - vim.fn.strdisplaywidth(tail), 8)
+    local gist_s = trunc(gist, room)
+    local text = head .. pad(gist_s, room) .. tail
+    add(text, {
+      { 0, #head, label_hl },
+      { #head, #head + #gist_s, "SidekickReviewThreadCollapsed" },
+      { #text - #tail, -1, "SidekickReviewDim" },
+    }, "comment")
+    return lines
+  end
+
+  -- header: ╭ ● [c1] lua/greet.lua:4 ──────────── 2 replies · resolved ─
+  local head = ("╭ %s[%s]"):format(status_icon(c.status), c.id)
+  if opts.location then
+    head = head .. " " .. M.location(c)
+  end
+  local tail = n > 0 and ("%d repl%s · %s"):format(n, n == 1 and "y" or "ies", label) or label
+  local fill = math.max(width - vim.fn.strdisplaywidth(head) - vim.fn.strdisplaywidth(tail) - 3, 1)
+  local text = head .. " " .. string.rep("─", fill) .. " " .. tail
+  add(text, {
+    { 0, 1, "SidekickReviewCommentBorder" },
+    { 1, #head, label_hl },
+    { #head, #text - #tail, "SidekickReviewCommentBorder" },
+    { #text - #tail, -1, "SidekickReviewDim" },
+  }, "comment")
+
+  --- One message in the conversation.
+  ---@param role "you"|"claude"
+  ---@param body string
+  ---@param ts? number
+  ---@param kind "comment"|"reply"
+  local function message(role, body, ts, kind)
+    local mine = role == "you"
+    local when = ts and ts > 0 and M.ago(ts) or ""
+    local who = ("%s%s"):format(mine and "" or M.icons.reply, role)
+    local stamp = when ~= "" and ("  " .. when) or ""
+    add(bar .. who .. stamp, {
+      { 0, #bar, "SidekickReviewCommentBorder" },
+      { #bar, #bar + #who, mine and "SidekickReviewAuthorYou" or "SidekickReviewAuthorAgent" },
+      { #bar + #who, -1, "SidekickReviewDim" },
+    }, kind)
+    for _, l in ipairs(vim.split(body, "\n", { plain = true })) do
+      local body_line = bar .. "  " .. l
+      local hl = M.inline_md(body_line, #bar + 2, mine and "SidekickReviewComment" or "SidekickReviewReply")
+      table.insert(hl, 1, { 0, #bar, "SidekickReviewCommentBorder" })
+      add(body_line, hl, kind)
     end
   end
 
-  lines[#lines + 1] = {
-    text = "╰" .. string.rep("─", math.min(math.max(width - 2, 4), 40)),
-    hl = { { 0, -1, "SidekickReviewCommentBorder" } },
-    item = { kind = "comment", comment = c },
-  }
+  message("you", c.body, c.created, "comment")
+  for _, r in ipairs(c.replies) do
+    add(bar, { { 0, -1, "SidekickReviewCommentBorder" } }, "reply")
+    message(r.role == "claude" and "claude" or "you", r.body, r.ts, "reply")
+  end
+
+  add("╰" .. string.rep("─", math.max(width - 1, 4)), { { 0, -1, "SidekickReviewCommentBorder" } }, "comment")
   return lines
 end
 
@@ -395,7 +524,7 @@ function M.response(ctx, turn)
   local function flush(key)
     used[key] = true
     for _, c in ipairs(anchored[key] or {}) do
-      vim.list_extend(lines, M.thread(c, W))
+      vim.list_extend(lines, M.thread(c, W, { collapsed = M.is_collapsed(ctx, c) }))
     end
   end
 
@@ -428,15 +557,20 @@ function M.response(ctx, turn)
 
   for bi, block in ipairs(turn.blocks) do
     if block.kind == "text" and block.text then
-      for li, l in ipairs(vim.split(block.text, "\n", { plain = true })) do
-        local key = ("b%d:%d"):format(bi, li)
-        add(l, { { 0, -1, "SidekickReviewText" } }, {
-          kind = "text",
+      -- prose is markdown: headings, lists, quotes and fenced code all get
+      -- their own treatment, but one rendered line per source line so comment
+      -- anchors (`b3:7`) keep pointing at the same thing
+      for _, ml in ipairs(Markdown.render(block.text, { width = W })) do
+        local key = ml.src and ("b%d:%d"):format(bi, ml.src) or nil
+        add(ml.text, ml.hl, {
+          kind = ml.code and "code" or "text",
           turn = turn.id,
           anchor_key = key,
-          anchor = l,
+          anchor = ml.text,
         })
-        flush(key)
+        if key then
+          flush(key)
+        end
       end
       add("", nil, { kind = "blank" })
     elseif block.kind == "thinking" and block.text then
@@ -494,7 +628,7 @@ function M.response(ctx, turn)
     add("", nil, { kind = "blank" })
     add(" unanchored comments", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank" })
     for _, c in ipairs(orphans) do
-      vim.list_extend(lines, M.thread(c, W))
+      vim.list_extend(lines, M.thread(c, W, { collapsed = M.is_collapsed(ctx, c) }))
     end
   end
 
@@ -651,7 +785,7 @@ function M.diff(ctx, turn, diff)
       })
       used[key] = true
       for _, c in ipairs(anchored[key] or {}) do
-        vim.list_extend(lines, M.thread(c, W))
+        vim.list_extend(lines, M.thread(c, W, { collapsed = M.is_collapsed(ctx, c) }))
       end
     end
     add("", nil, { kind = "blank" })
@@ -666,10 +800,78 @@ function M.diff(ctx, turn, diff)
   if #orphans > 0 then
     add(" comments on lines outside the current diff", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank" })
     for _, c in ipairs(orphans) do
-      vim.list_extend(lines, M.thread(c, W))
+      vim.list_extend(lines, M.thread(c, W, { collapsed = M.is_collapsed(ctx, c) }))
     end
   end
 
+  return lines
+end
+
+--------------------------------------------------------------------------------
+-- Threads view
+--------------------------------------------------------------------------------
+
+--- Every conversation on a turn, in one place.
+---
+--- Inline threads are right next to the code they are about, which is what you
+--- want while reviewing. Once a review has been round-tripped a couple of times
+--- it is the conversation you want to follow, not the diff, so this view lists
+--- them in order with their location as a heading.
+---@param ctx sidekick.review.Ctx
+---@param turn sidekick.review.Turn
+---@return sidekick.review.Line[]
+function M.threads(ctx, turn)
+  local lines = {} ---@type sidekick.review.Line[]
+  local W = ctx.width
+  local comments = ctx.store:for_turn(turn.id)
+
+  ---@param text string
+  ---@param hl? sidekick.review.HL[]
+  ---@param item? sidekick.review.Item
+  local function add(text, hl, item)
+    lines[#lines + 1] = { text = text, hl = hl, item = item }
+  end
+
+  local open_n, replies = 0, 0
+  for _, c in ipairs(comments) do
+    if c.status ~= "resolved" then
+      open_n = open_n + 1
+    end
+    replies = replies + #c.replies
+  end
+
+  add(("Threads · #%d %s"):format(turn.idx, turn.title), { { 0, -1, "SidekickReviewTitle" } }, {
+    kind = "header",
+    turn = turn.id,
+  })
+  add(
+    (" %d conversation%s · %d open · %d repl%s"):format(
+      #comments,
+      #comments == 1 and "" or "s",
+      open_n,
+      replies,
+      replies == 1 and "y" or "ies"
+    ),
+    { { 0, -1, "SidekickReviewDim" } },
+    { kind = "header", turn = turn.id }
+  )
+  add(string.rep("─", W), { { 0, -1, "SidekickReviewSep" } }, { kind = "blank" })
+
+  if #comments == 0 then
+    local hint = " no comments on this turn yet — press `c` on a diff line"
+    add(hint, { { 0, -1, "SidekickReviewDim" } }, { kind = "blank" })
+    return lines
+  end
+
+  for i, c in ipairs(comments) do
+    if i > 1 then
+      add("", nil, { kind = "blank" })
+    end
+    vim.list_extend(lines, M.thread(c, W, { collapsed = M.is_collapsed(ctx, c), location = true }))
+  end
+
+  add("", nil, { kind = "blank" })
+  add(" <CR> fold/unfold · r reply · o jump to the code", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank" })
   return lines
 end
 
@@ -693,6 +895,9 @@ function M.main(ctx)
         item = { kind = "blank" },
       },
     }
+  end
+  if ctx.sel_key == Store.THREADS then
+    return M.threads(ctx, turn)
   end
   if not ctx.sel_key or ctx.sel_key == Store.RESPONSE then
     return M.response(ctx, turn)

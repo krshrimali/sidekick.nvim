@@ -1,5 +1,6 @@
 ---@module 'luassert'
 
+local Config = require("sidekick.config")
 local Fixture = require("tests.review_fixture")
 local Config = require("sidekick.config")
 local Render = require("sidekick.review.render")
@@ -168,7 +169,9 @@ describe("review.ui", function()
       return it.kind == "comment"
     end)
     assert.are.same(anchor + 1, thread)
-    assert.is_not_nil(text(ui.main.buf):find("[c1] you", 1, true))
+    local out = text(ui.main.buf)
+    assert.is_not_nil(out:find("[c1]", 1, true))
+    assert.is_not_nil(out:find("respect vim.log.levels?", 1, true))
   end)
 
   it("keeps a comment visible when its anchor is gone", function()
@@ -350,9 +353,16 @@ describe("review.ui", function()
 
     ui.sel_key = fx.file
     ui:render()
+    -- answering a comment resolves it, so its thread folds to a summary line
     local main = text(ui.main.buf)
-    assert.is_not_nil(main:find("claude", 1, true))
     assert.is_not_nil(main:find("resolved", 1, true))
+    assert.is_nil(main:find("vim.log.levels.INFO", 1, true))
+
+    ui.expanded_threads[c1.id] = true
+    ui:render()
+    main = text(ui.main.buf)
+    assert.is_not_nil(main:find("claude", 1, true))
+    assert.is_not_nil(main:find("vim.log.levels.INFO", 1, true))
 
     -- syncing again must not duplicate the reply
     require("sidekick.review.thread").sync(fx.cwd, ui.transcript)
@@ -433,7 +443,7 @@ describe("review.ui", function()
     local function panes()
       local n = 0
       for _, w in ipairs(vim.api.nvim_list_wins()) do
-        if vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)):find("sidekick://review") then
+        if UI.pane_kind(w) then
           n = n + 1
         end
       end
@@ -471,6 +481,266 @@ describe("review.ui", function()
     -- a bordered float owns `row` (top border) through `row + height + 1`
     assert.are.same(main.row + main.height + 2, footer.row)
     assert.is_true(footer.row + 1 <= vim.o.lines - vim.o.cmdheight)
+  end)
+end)
+
+describe("review.ui layouts", function()
+  local fx ---@type sidekick.test.ReviewFixture
+  local restore_cli, restore_notify, sent
+
+  local function panes()
+    local n = 0
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if UI.pane_kind(w) then
+        n = n + 1
+      end
+    end
+    return n
+  end
+
+  before_each(function()
+    fx = Fixture.setup()
+    sent, restore_cli = Fixture.stub_cli()
+    _, restore_notify = Fixture.stub_notify()
+  end)
+
+  after_each(function()
+    UI.close()
+    restore_cli()
+    restore_notify()
+    fx.cleanup()
+  end)
+
+  it("floats by default, leaving the window layout alone", function()
+    local before = #vim.api.nvim_list_wins()
+    local ui = Review.open({ cwd = fx.cwd })
+    assert.are.same("float", ui.layout)
+    assert.are.same("editor", vim.api.nvim_win_get_config(ui.sidebar.win).relative)
+    UI.close()
+    assert.are.same(before, #vim.api.nvim_list_wins())
+  end)
+
+  it("opens in its own tabpage", function()
+    local origin = vim.api.nvim_get_current_tabpage()
+    local ui = Review.open({ cwd = fx.cwd, layout = "tab" })
+    assert.are.same("tab", ui.layout)
+    assert.are.same(2, #vim.api.nvim_list_tabpages())
+    assert.are.same(ui.tabpage, vim.api.nvim_get_current_tabpage())
+    assert.is_true(ui.owns_tab)
+    assert.are.same(origin, ui.origin_tab)
+    -- the panes are real windows there, only the status bar stays floating
+    assert.are.same("", vim.api.nvim_win_get_config(ui.sidebar.win).relative)
+    assert.are.same("", vim.api.nvim_win_get_config(ui.main.win).relative)
+    assert.are.same("editor", vim.api.nvim_win_get_config(ui.footer.win).relative)
+    assert.is_true(vim.api.nvim_win_get_width(ui.main.win) > vim.api.nvim_win_get_width(ui.sidebar.win))
+  end)
+
+  it("removes the tabpage it created and returns you home", function()
+    local origin = vim.api.nvim_get_current_tabpage()
+    local ui = Review.open({ cwd = fx.cwd, layout = "tab" })
+    ui:close()
+    assert.are.same(1, #vim.api.nvim_list_tabpages())
+    assert.are.same(origin, vim.api.nvim_get_current_tabpage())
+    assert.are.same(0, panes())
+  end)
+
+  it("splits the current tabpage without stealing a window", function()
+    local before = #vim.api.nvim_list_wins()
+    local ui = Review.open({ cwd = fx.cwd, layout = "split" })
+    assert.are.same(1, #vim.api.nvim_list_tabpages())
+    assert.is_falsy(ui.owns_tab)
+    assert.are.same("", vim.api.nvim_win_get_config(ui.sidebar.win).relative)
+    ui:close()
+    assert.are.same(0, panes())
+    assert.are.same(before, #vim.api.nvim_list_wins())
+  end)
+
+  it("sends from the tabpage the review was opened on", function()
+    -- `cli.tab_scoped` binds a session to a tabpage; a review living in its own
+    -- tab must not address (or spawn) a different agent
+    local prev = Config.cli.tab_scoped
+    Config.cli.tab_scoped = true
+    local ui = Review.open({ cwd = fx.cwd, layout = "tab" })
+    Store.get(fx.cwd):add({ turn = ui.sel_turn, target = "response", anchor_key = "b2:1", anchor = {}, body = "look here" })
+    ui:render()
+
+    local seen
+    package.loaded["sidekick.cli"].send = function(o)
+      seen = vim.api.nvim_get_current_tabpage()
+      sent[#sent + 1] = o
+    end
+    vim.api.nvim_set_current_win(ui.main.win)
+    local _, restore = Fixture.stub_composer(function(o)
+      return o.body
+    end)
+    vim.api.nvim_feedkeys(vim.keycode("S"), "mx", false)
+    restore()
+
+    assert.are.same(ui.origin_tab, seen)
+    assert.are.same(ui.tabpage, vim.api.nvim_get_current_tabpage())
+    Config.cli.tab_scoped = prev
+  end)
+
+  it("falls back to floating for an unknown layout", function()
+    local ui = Review.open({ cwd = fx.cwd, layout = "nonsense" })
+    assert.are.same("float", ui.layout)
+  end)
+
+  it("resizes in every layout", function()
+    for _, mode in ipairs({ "float", "tab", "split" }) do
+      local ui = Review.open({ cwd = fx.cwd, layout = mode })
+      assert.is_true(pcall(UI.resize, ui), mode)
+      local footer = vim.api.nvim_win_get_config(ui.footer.win)
+      assert.is_true(footer.row + 1 <= vim.o.lines - vim.o.cmdheight, mode)
+      ui:close()
+    end
+  end)
+end)
+
+describe("review.ui threads", function()
+  local fx ---@type sidekick.test.ReviewFixture
+  local restore_cli, restore_notify
+
+  ---@param ui sidekick.review.UI
+  ---@param opts table
+  local function comment(ui, opts)
+    return Store.get(fx.cwd):add(vim.tbl_extend("force", {
+      turn = ui.sel_turn,
+      target = "file",
+      file = fx.file,
+      rel = "lua/greet.lua",
+      lnum = 4,
+      side = "new",
+      anchor_key = "new:4",
+      anchor = { "  vim.notify('hi ' .. name)" },
+      body = "why?",
+    }, opts))
+  end
+
+  before_each(function()
+    fx = Fixture.setup()
+    _, restore_cli = Fixture.stub_cli()
+    _, restore_notify = Fixture.stub_notify()
+  end)
+
+  after_each(function()
+    UI.close()
+    restore_cli()
+    restore_notify()
+    fx.cleanup()
+  end)
+
+  it("folds a resolved thread and keeps an open one expanded", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    comment(ui, { body = "still open", status = "pending" })
+    comment(ui, { lnum = 9, anchor_key = "new:9", body = "already handled", status = "resolved",
+      replies = { { role = "claude", body = "fixed", ts = 0, turn = "x" } } })
+    ui.sel_key = fx.file
+    ui:render()
+    local out = text(ui.main.buf)
+    assert.is_not_nil(out:find("still open", 1, true))
+    -- resolved folds to a summary line carrying its reply count
+    assert.is_not_nil(out:find("1 reply · resolved", 1, true))
+    assert.is_nil(out:find("fixed", 1, true))
+  end)
+
+  it("unfolds and refolds a thread", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    local c = comment(ui, { status = "resolved", replies = { { role = "claude", body = "because latency", ts = 0, turn = "x" } } })
+    ui.sel_key = fx.file
+    ui:render()
+    assert.is_nil(text(ui.main.buf):find("because latency", 1, true))
+
+    vim.api.nvim_set_current_win(ui.main.win)
+    local row = row_where(ui.main, function(it)
+      return it.kind == "comment"
+    end)
+    vim.api.nvim_win_set_cursor(ui.main.win, { row, 0 })
+    feed("za")
+    assert.is_not_nil(text(ui.main.buf):find("because latency", 1, true))
+    assert.is_true(ui.expanded_threads[c.id])
+
+    row = row_where(ui.main, function(it)
+      return it.kind == "comment"
+    end)
+    vim.api.nvim_win_set_cursor(ui.main.win, { row, 0 })
+    feed("za")
+    assert.is_nil(text(ui.main.buf):find("because latency", 1, true))
+  end)
+
+  it("folds and unfolds every thread at once", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    comment(ui, { body = "one" })
+    comment(ui, { lnum = 9, anchor_key = "new:9", body = "two" })
+    ui.sel_key = fx.file
+    ui:render()
+    vim.api.nvim_set_current_win(ui.main.win)
+    feed("zM")
+    local out = text(ui.main.buf)
+    assert.is_not_nil(out:find("▸", 1, true))
+    feed("zR")
+    out = text(ui.main.buf)
+    assert.is_not_nil(out:find("one", 1, true))
+    assert.is_not_nil(out:find("two", 1, true))
+  end)
+
+  it("labels each message in a multi-round conversation", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    local c = comment(ui, {
+      body = "respect log levels?",
+      status = "pending",
+      replies = {
+        { role = "claude", body = "now passes INFO", ts = os.time() - 3600, turn = "x" },
+        { role = "user", body = "still noisy", ts = os.time() - 60 },
+      },
+    })
+    ui.sel_key = fx.file
+    ui.expanded_threads[c.id] = true
+    ui:render()
+    local out = text(ui.main.buf)
+    assert.is_not_nil(out:find("respect log levels?", 1, true))
+    assert.is_not_nil(out:find("claude", 1, true))
+    assert.is_not_nil(out:find("now passes INFO", 1, true))
+    assert.is_not_nil(out:find("still noisy", 1, true))
+    assert.is_not_nil(out:find("2 replies", 1, true))
+  end)
+
+  it("lists every conversation in the threads view", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    comment(ui, { body = "on the file" })
+    Store.get(fx.cwd):add({ turn = ui.sel_turn, target = "response", anchor_key = "b2:1", anchor = {}, body = "on the response" })
+    ui.sel_key = Store.THREADS
+    ui:render()
+    local out = text(ui.main.buf)
+    assert.is_not_nil(out:find("2 conversations", 1, true))
+    assert.is_not_nil(out:find("on the file", 1, true))
+    assert.is_not_nil(out:find("on the response", 1, true))
+    -- the threads view names where each one is anchored
+    assert.is_not_nil(out:find("lua/greet.lua:4", 1, true))
+  end)
+
+  it("offers a threads node only once there is a conversation", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    assert.is_nil(text(ui.sidebar.buf):find("Threads", 1, true))
+    comment(ui, {})
+    ui:render()
+    assert.is_not_nil(text(ui.sidebar.buf):find("Threads (1)", 1, true))
+  end)
+
+  it("jumps from a thread to the line it annotates", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    comment(ui, { lnum = 9, anchor_key = "new:9", body = "why a bool?" })
+    ui.sel_key = Store.THREADS
+    ui:render()
+    vim.api.nvim_set_current_win(ui.main.win)
+    local row = row_where(ui.main, function(it)
+      return it.kind == "comment"
+    end)
+    vim.api.nvim_win_set_cursor(ui.main.win, { row, 0 })
+    feed("o")
+    assert.are.same(fx.file, ui.sel_key)
+    local at = ui.main.lines[vim.api.nvim_win_get_cursor(ui.main.win)[1]]
+    assert.are.same("new:9", at.item.anchor_key)
   end)
 end)
 

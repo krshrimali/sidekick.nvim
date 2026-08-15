@@ -27,6 +27,8 @@ local function clean(body)
   return body ~= "" and body or nil
 end
 
+---@alias sidekick.review.LayoutKind "float"|"tab"|"split"
+
 ---@class sidekick.review.Pane
 ---@field buf integer
 ---@field win integer
@@ -38,6 +40,8 @@ end
 ---@field transcript? sidekick.review.Transcript
 ---@field store sidekick.review.Store
 ---@field expanded table<string, boolean>
+---@field collapsed table<string, boolean>
+---@field expanded_threads table<string, boolean>
 ---@field show_thinking boolean
 ---@field sel_turn? string
 ---@field sel_key? string
@@ -50,6 +54,11 @@ end
 ---@field autocmds integer[]
 ---@field closed boolean
 ---@field focus "sidebar"|"main"
+---@field layout sidekick.review.LayoutKind
+---@field tabpage? integer tabpage the panes live in
+---@field owns_tab? boolean true when we created that tabpage
+---@field origin_tab integer tabpage the review was launched from
+---@field origin_win? integer window to return to on close
 local UI = {}
 UI.__index = UI
 
@@ -150,17 +159,40 @@ end
 -- buffers & windows
 --------------------------------------------------------------------------------
 
----@param name string
+--- Review buffers are identified by `b:sidekick_review`, never by name: the
+--- name is free to be something that reads well in the tabline.
+---@param kind "sidebar"|"main"|"footer"
+---@param label string
 ---@return integer
-local function make_buf(name)
+local function make_buf(kind, label)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].swapfile = false
   vim.bo[buf].modifiable = false
   vim.bo[buf].filetype = "sidekick_review"
-  pcall(vim.api.nvim_buf_set_name, buf, "sidekick://review/" .. name)
+  vim.b[buf].sidekick_review = kind
+  -- free of slashes so the tabline stays legible; buffer names must be unique,
+  -- so fall back to a suffixed one if a stale review buffer still holds it
+  local name = "Review " .. label
+  if not pcall(vim.api.nvim_buf_set_name, buf, name) then
+    pcall(vim.api.nvim_buf_set_name, buf, ("%s (%d)"):format(name, buf))
+  end
   return buf
+end
+
+--- True for any window showing part of the review UI.
+---@param win integer
+---@return string? kind
+function M.pane_kind(win)
+  if not vim.api.nvim_win_is_valid(win) then
+    return nil
+  end
+  local buf = vim.api.nvim_win_get_buf(win)
+  local ok, kind = pcall(function()
+    return vim.b[buf].sidekick_review
+  end)
+  return ok and kind or nil
 end
 
 ---@param pane sidekick.review.Pane
@@ -189,6 +221,138 @@ local function paint(pane, lines)
       end
     end
   end
+end
+
+--------------------------------------------------------------------------------
+-- layouts
+--------------------------------------------------------------------------------
+
+--- Options every review window gets, whatever the layout.
+---@param win integer
+---@param opts? {cursorline?:boolean}
+local function setup_win(win, opts)
+  opts = opts or {}
+  vim.wo[win].wrap = false
+  vim.wo[win].number = false
+  vim.wo[win].relativenumber = false
+  vim.wo[win].signcolumn = "no"
+  vim.wo[win].foldcolumn = "0"
+  vim.wo[win].list = false
+  vim.wo[win].spell = false
+  vim.wo[win].cursorline = opts.cursorline ~= false
+  -- an empty review pane should read as empty, not as an unopened file
+  vim.wo[win].fillchars = "eob: "
+  vim.wo[win].winhighlight =
+    "Normal:SidekickReviewNormal,CursorLine:SidekickReviewCursorLine,FloatBorder:SidekickReviewBorder"
+end
+
+--- In split layouts there are no float borders to carry a title, so the panes
+--- name themselves in a winbar instead.
+---@param win integer
+---@param label string
+local function set_winbar(win, label)
+  if vim.api.nvim_win_is_valid(win) then
+    vim.wo[win].winbar = ("%%#SidekickReviewTitle# %s%%*"):format(label)
+  end
+end
+
+--- The footer is a pinned float in every layout: it always belongs at the
+--- bottom of the screen, and a real window there would fight the split tree.
+---@return vim.api.keyset.win_config
+function M.footer_config()
+  local total_h = math.max(vim.o.lines - vim.o.cmdheight, 4)
+  return {
+    relative = "editor",
+    row = total_h - 1,
+    col = 0,
+    width = math.max(vim.o.columns, 10),
+    height = 1,
+    style = "minimal",
+    border = "none",
+    focusable = false,
+    zindex = 201,
+  }
+end
+
+--- Floating overlay: leaves the user's window layout completely untouched.
+function UI:layout_float()
+  local cfgs = win_configs(geometry())
+  self.sidebar.win = vim.api.nvim_open_win(
+    self.sidebar.buf,
+    false,
+    vim.tbl_extend("force", cfgs.sidebar, {
+      style = "minimal",
+      border = "rounded",
+      title = " turns ",
+      title_pos = "center",
+      zindex = 200,
+    })
+  )
+  self.main.win = vim.api.nvim_open_win(
+    self.main.buf,
+    false,
+    vim.tbl_extend("force", cfgs.main, {
+      style = "minimal",
+      border = "rounded",
+      title = " review ",
+      title_pos = "center",
+      zindex = 200,
+    })
+  )
+  self.footer.win = vim.api.nvim_open_win(
+    self.footer.buf,
+    false,
+    vim.tbl_extend("force", cfgs.footer, { style = "minimal", border = "none", zindex = 201 })
+  )
+end
+
+--- Real splits, either in a dedicated tabpage or in the current one.
+---@param mode "tab"|"split"
+function UI:layout_splits(mode)
+  local geo = geometry()
+
+  if mode == "tab" then
+    -- `tabnew` hands us a fresh scratch window; that one is ours to take over
+    vim.cmd("noautocmd tabnew")
+    self.owns_tab = true
+    vim.api.nvim_win_set_buf(0, self.sidebar.buf)
+  else
+    -- in the current tabpage, never hijack a window the user is using: make a
+    -- new one so closing the review restores exactly what was there before
+    vim.cmd("noautocmd topleft vsplit")
+    vim.api.nvim_win_set_buf(0, self.sidebar.buf)
+  end
+  self.tabpage = vim.api.nvim_get_current_tabpage()
+  self.sidebar.win = vim.api.nvim_get_current_win()
+
+  -- review pane takes the rest
+  vim.cmd("noautocmd vertical rightbelow split")
+  self.main.win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(self.main.win, self.main.buf)
+
+  pcall(vim.api.nvim_win_set_width, self.sidebar.win, geo.sidebar)
+  vim.wo[self.sidebar.win].winfixwidth = true
+  set_winbar(self.sidebar.win, "turns")
+  set_winbar(self.main.win, "review")
+
+  self.footer.win = vim.api.nvim_open_win(self.footer.buf, false, M.footer_config())
+end
+
+--- Create the three panes according to `review.layout`.
+function UI:open_windows()
+  self.sidebar = { buf = make_buf("sidebar", "turns"), win = 0, lines = {} }
+  self.main = { buf = make_buf("main", "diff"), win = 0, lines = {} }
+  self.footer = { buf = make_buf("footer", "status"), win = 0, lines = {} }
+
+  if self.layout == "float" then
+    self:layout_float()
+  else
+    self:layout_splits(self.layout)
+  end
+
+  setup_win(self.sidebar.win)
+  setup_win(self.main.win)
+  setup_win(self.footer.win, { cursorline = false })
 end
 
 --------------------------------------------------------------------------------
@@ -236,6 +400,8 @@ function UI:ctx(width)
     transcript = self.transcript,
     store = self.store,
     expanded = self.expanded,
+    collapsed = self.collapsed,
+    expanded_threads = self.expanded_threads,
     show_thinking = self.show_thinking,
     sel_turn = self.sel_turn,
     sel_key = self.sel_key,
@@ -335,7 +501,7 @@ function UI:activate(opts)
     self.sel_turn = item.turn
     self.sel_key = Store.RESPONSE
     self:render({ keep_cursor = true })
-  elseif item.kind == "response" or item.kind == "file" then
+  elseif item.kind == "response" or item.kind == "file" or item.kind == "threads" then
     self.sel_turn = item.turn
     self.sel_key = item.key
     self:render({ keep_cursor = true })
@@ -542,6 +708,61 @@ function UI:delete_comment()
   end)
 end
 
+--- From a thread, jump to the diff line it is anchored to.
+function UI:goto_anchor()
+  local item = self:main_item()
+  local c = item and item.comment
+  if not c then
+    Util.warn("put the cursor on a comment first")
+    return
+  end
+  self.sel_key = c.target == "file" and c.file or Store.RESPONSE
+  self.expanded_threads[c.id] = true
+  self.collapsed[c.id] = nil
+  self:render({ keep_cursor = true })
+  for i, l in ipairs(self.main.lines) do
+    if l.item and l.item.anchor_key == c.anchor_key and l.item.kind ~= "comment" then
+      pcall(vim.api.nvim_win_set_cursor, self.main.win, { i, 0 })
+      vim.cmd("normal! zz")
+      return
+    end
+  end
+end
+
+--- Fold or unfold the thread under the cursor.
+---@param force? boolean explicitly collapse (true) or expand (false)
+function UI:toggle_thread(force)
+  local item = self:main_item()
+  if not item or not item.comment then
+    Util.warn("put the cursor on a comment to fold it")
+    return
+  end
+  local c = item.comment
+  local collapsed = force
+  if collapsed == nil then
+    collapsed = not Render.is_collapsed(self:ctx(1), c)
+  end
+  -- both tables are needed: the default depends on status, so "keep this one
+  -- open" and "keep this one shut" are distinct from "no opinion"
+  self.collapsed[c.id] = collapsed or nil
+  self.expanded_threads[c.id] = (not collapsed) or nil
+  self:render({ keep_cursor = true })
+end
+
+--- Fold every thread in the current view, or unfold them all.
+---@param collapsed boolean
+function UI:fold_all(collapsed)
+  local turn = self:turn()
+  if not turn then
+    return
+  end
+  for _, c in ipairs(self.store:for_turn(turn.id)) do
+    self.collapsed[c.id] = collapsed or nil
+    self.expanded_threads[c.id] = (not collapsed) or nil
+  end
+  self:render({ keep_cursor = true })
+end
+
 function UI:resolve_comment()
   local item = self:main_item()
   if not item or not item.comment then
@@ -606,7 +827,9 @@ function UI:submit(opts)
         Util.warn("sidekick.review: empty message, nothing sent")
         return
       end
-      require("sidekick.cli").send({ msg = body, submit = true, focus = false })
+      self:at_origin(function()
+        require("sidekick.cli").send({ msg = body, submit = true, focus = false })
+      end)
       for _, c in ipairs(comments) do
         self.store:set_status(c.id, "sent")
       end
@@ -620,36 +843,55 @@ function UI:help()
   local lines = {
     "# Sidekick Review",
     "",
-    "Every Claude turn is a pull request: a prompt, a response, and changed files.",
+    "Every agent turn is a pull request: a prompt, a response, and changed files.",
+    "Works with Claude Code and Codex.",
     "",
     "## Navigation",
-    "  <Tab>       switch between sidebar and diff pane",
-    "  <CR>        sidebar: expand turn / open item (and focus it)",
-    "  o           sidebar: open item without leaving the sidebar",
-    "  J / K       next / previous item (previews as you go)",
+    "  <Tab>       switch between the sidebar and the review pane",
+    "  <CR>        sidebar: expand a turn / open an item (and focus it)",
+    "  o           sidebar: open without leaving the sidebar",
+    "  J / K       next / previous item, previewing as you go",
     "  ]c / [c     next / previous comment",
     "  ]h / [h     next / previous hunk",
     "  gf          open the real file at this line",
     "",
     "## Reviewing",
-    "  c           comment on the line under the cursor (works in visual mode)",
+    "  c           comment on the line under the cursor (works on a visual range)",
     "  r           reply to the thread under the cursor",
     "  e           edit the comment under the cursor",
     "  d           delete the comment under the cursor",
     "  <Space>     resolve / unresolve the comment under the cursor",
     "  x           toggle viewed for the response or file",
-    "  t           expand / collapse Claude's thinking",
+    "  t           expand / collapse the agent's thinking",
+    "",
+    "## Threads",
+    "  The `Threads` node in the sidebar lists every conversation on a turn in",
+    "  one place, which reads better than hunting through diffs once a review",
+    "  has been round-tripped a few times.",
+    "",
+    "  <CR> / za   fold or unfold the thread under the cursor",
+    "  zM / zR     fold or unfold every thread",
+    "  o           from a thread, jump to the line it annotates",
+    "",
+    "  Resolved conversations fold away by default; anything still waiting on",
+    "  someone stays open.",
     "",
     "## Submitting",
-    "  S           submit this turn's pending comments to Claude",
+    "  S           submit this turn's pending comments",
     "  A           submit every pending comment across all turns",
     "",
-    "Claude is asked to tag replies `[c1]`, `[c2]`… so they thread back under",
-    "the comment they answer. Press R to refresh after Claude responds.",
+    "Replies are asked to carry their tag (`[c1]`, `[c2]`…) so they thread back",
+    "under the comment they answer. The transcript is watched, so answers appear",
+    "on their own; R forces a refresh.",
     "",
     "  R           refresh from the transcript",
     "  q / <Esc>   close",
+    "",
+    "## Layouts",
+    "  opts.review.layout = \"float\" | \"tab\" | \"split\"",
+    "  or per call: require(\"sidekick.review\").open({ layout = \"tab\" })",
   }
+
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
@@ -776,14 +1018,26 @@ function UI:keymaps(buf, which)
     map("n", "<CR>", function()
       local item = self:main_item()
       if item and item.comment then
-        self:reply()
+        self:toggle_thread()
       else
         self:goto_file()
       end
-    end, "reply or open file")
+    end, "fold thread or open file")
+    map("n", "za", function()
+      self:toggle_thread()
+    end, "fold thread")
+    map("n", "zM", function()
+      self:fold_all(true)
+    end, "fold all threads")
+    map("n", "zR", function()
+      self:fold_all(false)
+    end, "unfold all threads")
     map("n", "gf", function()
       self:goto_file()
     end, "open file")
+    map("n", "o", function()
+      self:goto_anchor()
+    end, "jump to the anchored line")
     map("n", "]c", function()
       self:jump(1, "comment")
     end, "next comment")
@@ -854,12 +1108,54 @@ function UI:close()
       pcall(vim.api.nvim_win_close, pane.win, true)
     end
   end
+
+  -- a tabpage we opened is ours to clean up; one the user already had stays
+  if self.owns_tab and self.tabpage and vim.api.nvim_tabpage_is_valid(self.tabpage) then
+    if #vim.api.nvim_list_tabpages() > 1 then
+      pcall(vim.api.nvim_win_close, vim.api.nvim_tabpage_get_win(self.tabpage), true)
+    end
+  end
+  if self.origin_tab and vim.api.nvim_tabpage_is_valid(self.origin_tab) then
+    pcall(vim.api.nvim_set_current_tabpage, self.origin_tab)
+    if self.origin_win and vim.api.nvim_win_is_valid(self.origin_win) then
+      pcall(vim.api.nvim_set_current_win, self.origin_win)
+    end
+  end
+
   if M.current == self then
     M.current = nil
   end
 end
 
----@param opts? {cwd?:string, session?:string, turn?:string}
+--- Run `fn` on the tabpage the review was opened from.
+---
+--- With `cli.tab_scoped` a CLI session belongs to a tabpage. The review can be
+--- sitting in a tab of its own, so anything that talks to the CLI has to hop
+--- back first or it would address the wrong agent (or spawn a new one).
+---@generic T
+---@param fn fun():T
+---@return T
+function UI:at_origin(fn)
+  local tab = vim.api.nvim_get_current_tabpage()
+  local skip = not Config.cli.tab_scoped
+    or not self.origin_tab
+    or tab == self.origin_tab
+    or not vim.api.nvim_tabpage_is_valid(self.origin_tab)
+  if skip then
+    return fn()
+  end
+  vim.api.nvim_set_current_tabpage(self.origin_tab)
+  local ok, res = pcall(fn)
+  if vim.api.nvim_tabpage_is_valid(tab) then
+    pcall(vim.api.nvim_set_current_tabpage, tab)
+  end
+  if not ok then
+    error(res)
+  end
+  return res
+end
+
+---@param opts? sidekick.review.Open
 ---@return sidekick.review.UI?
 function M.open(opts)
   opts = opts or {}
@@ -869,16 +1165,29 @@ function M.open(opts)
   end
 
   local cwd = vim.fs.normalize(opts.cwd or vim.uv.cwd() or ".")
+  local layout = opts.layout or Config.review.layout or "float"
+  if layout ~= "float" and layout ~= "tab" and layout ~= "split" then
+    Util.warn(("sidekick.review: unknown layout %q, falling back to `float`"):format(tostring(layout)))
+    layout = "float"
+  end
+
   local self = setmetatable({
     cwd = cwd,
     session = opts.session,
     store = Store.get(cwd),
     expanded = {},
+    collapsed = {},
+    expanded_threads = {},
     show_thinking = false,
     diffs = {},
     closed = false,
     focus = "sidebar",
     autocmds = {},
+    layout = layout,
+    -- a CLI session can be bound to a tabpage (`cli.tab_scoped`), so remember
+    -- where we came from and send from there
+    origin_tab = vim.api.nvim_get_current_tabpage(),
+    origin_win = vim.api.nvim_get_current_win(),
   }, UI) --[[@as sidekick.review.UI]]
 
   self:reload()
@@ -901,51 +1210,7 @@ function M.open(opts)
     self.expanded[self.sel_turn] = true
   end
 
-  local geo = geometry()
-  local cfgs = win_configs(geo)
-
-  local function open_win(buf, cfg)
-    local win = vim.api.nvim_open_win(buf, false, cfg)
-    vim.wo[win].wrap = false
-    vim.wo[win].number = false
-    vim.wo[win].relativenumber = false
-    vim.wo[win].signcolumn = "no"
-    vim.wo[win].cursorline = true
-    vim.wo[win].winhighlight =
-      "Normal:SidekickReviewNormal,CursorLine:SidekickReviewCursorLine,FloatBorder:SidekickReviewBorder"
-    return win
-  end
-
-  self.sidebar = { buf = make_buf("sidebar"), win = 0, lines = {} }
-  self.main = { buf = make_buf("main"), win = 0, lines = {} }
-  self.footer = { buf = make_buf("footer"), win = 0, lines = {} }
-
-  self.sidebar.win = open_win(
-    self.sidebar.buf,
-    vim.tbl_extend("force", cfgs.sidebar, {
-      style = "minimal",
-      border = "rounded",
-      title = " turns ",
-      title_pos = "center",
-      zindex = 200,
-    })
-  )
-  self.main.win = open_win(
-    self.main.buf,
-    vim.tbl_extend("force", cfgs.main, {
-      style = "minimal",
-      border = "rounded",
-      title = " review ",
-      title_pos = "center",
-      zindex = 200,
-    })
-  )
-  self.footer.win = open_win(
-    self.footer.buf,
-    vim.tbl_extend("force", cfgs.footer, { style = "minimal", border = "none", zindex = 201 })
-  )
-  vim.wo[self.footer.win].cursorline = false
-
+  self:open_windows()
   self:keymaps(self.sidebar.buf, "sidebar")
   self:keymaps(self.main.buf, "main")
 
@@ -992,11 +1257,23 @@ end
 
 ---@param self sidekick.review.UI
 function M.resize(self)
-  local cfgs = win_configs(geometry())
-  for _, name in ipairs({ "sidebar", "main", "footer" }) do
-    local pane = self[name]
-    if pane and vim.api.nvim_win_is_valid(pane.win) then
-      pcall(vim.api.nvim_win_set_config, pane.win, cfgs[name])
+  local geo = geometry()
+  if self.layout == "float" then
+    local cfgs = win_configs(geo)
+    for _, name in ipairs({ "sidebar", "main", "footer" }) do
+      local pane = self[name]
+      if pane and vim.api.nvim_win_is_valid(pane.win) then
+        pcall(vim.api.nvim_win_set_config, pane.win, cfgs[name])
+      end
+    end
+  else
+    -- splits reflow on their own; only the sidebar width and the pinned footer
+    -- need to be put back
+    if vim.api.nvim_win_is_valid(self.sidebar.win) then
+      pcall(vim.api.nvim_win_set_width, self.sidebar.win, geo.sidebar)
+    end
+    if vim.api.nvim_win_is_valid(self.footer.win) then
+      pcall(vim.api.nvim_win_set_config, self.footer.win, M.footer_config())
     end
   end
   self:render({ keep_cursor = true })

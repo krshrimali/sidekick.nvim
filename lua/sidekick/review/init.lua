@@ -17,8 +17,9 @@ local M = {}
 
 ---@class sidekick.review.Open
 ---@field cwd? string project directory (defaults to the current one)
----@field session? string Claude session id (defaults to the most recent)
+---@field session? string session id (defaults to the most recent)
 ---@field turn? string turn id to select
+---@field layout? sidekick.review.LayoutKind overrides `opts.review.layout`
 
 --- Open the review overlay.
 ---@param opts? sidekick.review.Open

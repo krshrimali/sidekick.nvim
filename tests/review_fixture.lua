@@ -63,6 +63,7 @@ end
 --- Create a project + transcript and point the review modules at them.
 ---@return sidekick.test.ReviewFixture
 function M.setup()
+  local Claude = require("sidekick.review.provider.claude")
   local Transcript = require("sidekick.review.transcript")
   local Store = require("sidekick.review.store")
 
@@ -151,8 +152,8 @@ function M.setup()
   local transcript = dir .. "/sess-test01.jsonl"
   M.write(transcript, table.concat(entries, "\n") .. "\n")
 
-  local prev_root, prev_state = Transcript.root, Store.root
-  Transcript.root = projects
+  local prev_root, prev_state = Claude.root, Store.root
+  Claude.root = projects
   Store.root = root .. "/state"
   Store.reset()
 
@@ -163,7 +164,7 @@ function M.setup()
     newfile = newfile,
     transcript = transcript,
     cleanup = function()
-      Transcript.root, Store.root = prev_root, prev_state
+      Claude.root, Store.root = prev_root, prev_state
       Store.reset()
       vim.fn.delete(root, "rf")
     end,

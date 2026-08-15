@@ -1,5 +1,7 @@
 local M = {}
 
+local debounce_timers = setmetatable({}, { __mode = "k" }) ---@type table<function, uv.uv_timer_t>
+
 ---@param msg string|string[]
 ---@param level? vim.log.levels
 function M.notify(msg, level)
@@ -56,7 +58,7 @@ end
 ---@return T
 function M.debounce(fn, ms)
   local timer = assert(vim.uv.new_timer())
-  return function(...)
+  local ret = function(...)
     local args = { ... }
     timer:start(
       ms or 20,
@@ -65,6 +67,18 @@ function M.debounce(fn, ms)
         pcall(fn, unpack(args))
       end)
     )
+  end
+  debounce_timers[ret] = timer
+  return ret
+end
+
+---@param fn function
+function M.close_debounce(fn)
+  local timer = debounce_timers[fn]
+  debounce_timers[fn] = nil
+  if timer and not timer:is_closing() then
+    timer:stop()
+    timer:close()
   end
 end
 

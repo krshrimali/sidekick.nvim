@@ -46,6 +46,8 @@ end
 ---@field main sidekick.review.Pane
 ---@field footer sidekick.review.Pane
 ---@field watcher? uv.uv_fs_event_t
+---@field watch_refresh? function
+---@field autocmds integer[]
 ---@field closed boolean
 ---@field focus "sidebar"|"main"
 local UI = {}
@@ -818,6 +820,7 @@ function UI:watch()
     self:reload()
     self:render({ keep_cursor = true })
   end, 400)
+  self.watch_refresh = refresh
   local ok = pcall(handle.start, handle, file, {}, function()
     vim.schedule(refresh)
   end)
@@ -838,6 +841,14 @@ function UI:close()
     pcall(self.watcher.close, self.watcher)
     self.watcher = nil
   end
+  if self.watch_refresh then
+    Util.close_debounce(self.watch_refresh)
+    self.watch_refresh = nil
+  end
+  for _, id in ipairs(self.autocmds or {}) do
+    pcall(vim.api.nvim_del_autocmd, id)
+  end
+  self.autocmds = {}
   for _, pane in ipairs({ self.sidebar, self.main, self.footer }) do
     if pane and vim.api.nvim_win_is_valid(pane.win) then
       pcall(vim.api.nvim_win_close, pane.win, true)
@@ -867,6 +878,7 @@ function M.open(opts)
     diffs = {},
     closed = false,
     focus = "sidebar",
+    autocmds = {},
   }, UI) --[[@as sidekick.review.UI]]
 
   self:reload()
@@ -938,14 +950,14 @@ function M.open(opts)
   self:keymaps(self.main.buf, "main")
 
   -- closing any pane tears the whole overlay down
-  vim.api.nvim_create_autocmd("WinClosed", {
+  self.autocmds[#self.autocmds + 1] = vim.api.nvim_create_autocmd("WinClosed", {
     group = Config.augroup,
     pattern = tostring(self.sidebar.win) .. "," .. tostring(self.main.win),
     callback = function()
       self:close()
     end,
   })
-  vim.api.nvim_create_autocmd("VimResized", {
+  self.autocmds[#self.autocmds + 1] = vim.api.nvim_create_autocmd("VimResized", {
     group = Config.augroup,
     callback = function()
       if self.closed then
@@ -954,7 +966,7 @@ function M.open(opts)
       M.resize(self)
     end,
   })
-  vim.api.nvim_create_autocmd("WinEnter", {
+  self.autocmds[#self.autocmds + 1] = vim.api.nvim_create_autocmd("WinEnter", {
     group = Config.augroup,
     callback = function()
       if self.closed then
@@ -971,7 +983,9 @@ function M.open(opts)
 
   M.current = self
   self:render()
-  self:watch()
+  if Config.review.watch ~= false then
+    self:watch()
+  end
   self:focus_pane("sidebar")
   return self
 end

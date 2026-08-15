@@ -1,6 +1,7 @@
 ---@module 'luassert'
 
 local Fixture = require("tests.review_fixture")
+local Config = require("sidekick.config")
 local Render = require("sidekick.review.render")
 local Review = require("sidekick.review")
 local Store = require("sidekick.review.store")
@@ -428,6 +429,7 @@ describe("review.ui", function()
   end)
 
   it("toggles open and closed without leaking windows", function()
+    local autocmds = #vim.api.nvim_get_autocmds({ group = Config.augroup })
     local function panes()
       local n = 0
       for _, w in ipairs(vim.api.nvim_list_wins()) do
@@ -444,6 +446,7 @@ describe("review.ui", function()
     Review.toggle({ cwd = fx.cwd })
     assert.is_true(a.closed)
     assert.are.same(0, panes())
+    assert.are.same(autocmds, #vim.api.nvim_get_autocmds({ group = Config.augroup }))
     a:close() -- idempotent
   end)
 

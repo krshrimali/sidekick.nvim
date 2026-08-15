@@ -1043,6 +1043,43 @@ Comments are stored per **project**, not per session, so they survive narrowing.
 4. Press `r` on a thread to follow up — it becomes pending again, and the next
    submission carries the whole conversation so the agent has the context.
 
+### Comments in the code
+
+A comment is invisible the moment you close the review — you open the file and
+nothing says line 4 has feedback waiting on it. So unresolved comments are shown
+in the file itself:
+
+```text
+    3 function M.greet(name)
+▌   4   vim.notify('hi ' .. name)   Should this respect vim.log.levels?
+    5 end
+    6
+    7 function M.bye()
+▌   8   vim.notify('bye')   Why does bye() return a bool now? · awaiting reply
+▌   9   return true   Add a test for this · 1 reply
+```
+
+Drafts and sent comments are coloured differently, replies are counted, and
+resolved threads stop showing — finished business is just gutter noise.
+`require("sidekick.review").open_at()` jumps from the line into the
+conversation, with that thread unfolded.
+
+```lua
+opts = {
+  review = {
+    signs = {
+      enabled = true,
+      text = "▌",
+      virtual_text = true, -- also show the comment at end of line
+      max_width = 60,
+    },
+  },
+}
+```
+
+The project is resolved from the file, not from your cwd, so this works when
+you open a file from outside the directory the agent ran in.
+
 ### Verdicts
 
 A review can carry a ruling, not just comments — the agent should be able to

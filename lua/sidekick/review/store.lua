@@ -94,6 +94,27 @@ function M.reset()
   cache = {}
 end
 
+--- Path of the state file for a project, without loading it.
+---@param cwd string
+---@return string
+function M.path_for(cwd)
+  return dir() .. "/" .. Transcript.encode(vim.fs.normalize(cwd)) .. ".json"
+end
+
+--- Whether a project has review state on disk (or loaded in this session).
+---
+--- Lets callers find the project a file belongs to without instantiating a
+--- store for every directory they walk past.
+---@param cwd string
+---@return boolean
+function M.exists(cwd)
+  cwd = vim.fs.normalize(cwd)
+  if cache[cwd] then
+    return true
+  end
+  return vim.uv.fs_stat(M.path_for(cwd)) ~= nil
+end
+
 ---@return sidekick.review.Data
 local function empty()
   return { version = M.VERSION, seq = 0, comments = {}, viewed = {}, verdicts = {} }
@@ -152,7 +173,11 @@ function Store:save()
   if not ok_rename then
     vim.uv.fs_unlink(tmp)
     Util.error("sidekick.review: cannot replace " .. self.file .. ": " .. tostring(err))
+    return
   end
+  -- anything showing comments outside the review (buffer marks, statusline)
+  -- redraws off this
+  Util.emit("SidekickReviewChanged", { cwd = self.cwd })
 end
 
 ---@param comment sidekick.review.Comment|{id?:string, status?:string, replies?:sidekick.review.Reply[]}

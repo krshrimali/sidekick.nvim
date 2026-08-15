@@ -163,6 +163,16 @@ local defaults = {
     sidebar_width = 38, -- columns for the turn/file tree
     -- number of context lines shown around each change
     context = 3,
+    --- Show unresolved review comments in the file itself, so feedback is
+    --- visible when you go back to the code rather than only in the overlay.
+    ---@class sidekick.review.MarksConfig
+    signs = {
+      enabled = true,
+      text = "▌", -- sign column glyph
+      virtual_text = true, -- also show the comment at the end of the line
+      max_width = 60, -- how much of the comment to show
+      priority = 100,
+    },
     -- automatically refresh while the overlay is open and Claude is writing
     watch = true,
   },
@@ -250,6 +260,10 @@ function M.setup(opts)
     require("sidekick.nes").enable(M.nes.enabled ~= false)
 
     require("sidekick.status").setup()
+
+    if M.review.enabled ~= false and (M.review.signs or {}).enabled ~= false then
+      require("sidekick.review.marks").enable()
+    end
 
     M.validate("cli.win.layout", { "float", "left", "bottom", "top", "right" })
     M.validate("cli.mux.backend", { "tmux", "zellij" })
@@ -340,6 +354,7 @@ function M.set_hl()
     ReviewTurnSel = "Title",
     ReviewSelected = "Title",
     ReviewSession = "Directory",
+    ReviewMarkText = "DiagnosticVirtualTextWarn",
     ReviewViewed = "Comment",
     ReviewStat = "Number",
     ReviewPending = "DiagnosticWarn",

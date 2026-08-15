@@ -689,6 +689,173 @@ describe("review.ui sessions", function()
   end)
 end)
 
+describe("review marks", function()
+  local fx ---@type sidekick.test.ReviewFixture
+  local restore_cli, restore_notify, notices
+  local Marks = require("sidekick.review.marks")
+  local ns = vim.api.nvim_create_namespace("sidekick.review.marks")
+
+  ---@param buf integer
+  local function marks(buf)
+    return vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+  end
+
+  ---@param opts table
+  local function comment(opts)
+    return Store.get(fx.cwd):add(vim.tbl_extend("force", {
+      turn = "t1",
+      target = "file",
+      file = fx.file,
+      rel = "lua/greet.lua",
+      lnum = 4,
+      side = "new",
+      anchor_key = "new:4",
+      anchor = { "x" },
+      body = "why?",
+    }, opts))
+  end
+
+  before_each(function()
+    fx = Fixture.setup()
+    _, restore_cli = Fixture.stub_cli()
+    notices, restore_notify = Fixture.stub_notify()
+    Marks.enable()
+  end)
+
+  after_each(function()
+    Marks.disable()
+    UI.close()
+    restore_cli()
+    restore_notify()
+    fx.cleanup()
+  end)
+
+  it("shows an unresolved comment in the file it is about", function()
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    local buf = vim.api.nvim_get_current_buf()
+    assert.are.same(0, #marks(buf))
+
+    comment({ body = "should this respect log levels?" })
+    vim.wait(50)
+
+    local m = marks(buf)
+    assert.are.same(1, #m)
+    assert.are.same(3, m[1][2]) -- 0-indexed line 4
+    assert.is_not_nil(m[1][4].sign_text)
+    assert.are.same("SidekickReviewPending", m[1][4].sign_hl_group)
+    assert.is_not_nil(m[1][4].virt_text[1][1]:find("respect log levels", 1, true))
+  end)
+
+  it("distinguishes a sent comment from a draft", function()
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    local buf = vim.api.nvim_get_current_buf()
+    comment({ status = "sent" })
+    vim.wait(50)
+    local m = marks(buf)
+    assert.are.same("SidekickReviewSent", m[1][4].sign_hl_group)
+    assert.is_not_nil(m[1][4].virt_text[1][1]:find("awaiting reply", 1, true))
+  end)
+
+  it("stops showing a resolved comment", function()
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    local buf = vim.api.nvim_get_current_buf()
+    local c = comment({})
+    vim.wait(50)
+    assert.are.same(1, #marks(buf))
+    Store.get(fx.cwd):set_status(c.id, "resolved")
+    vim.wait(50)
+    assert.are.same(0, #marks(buf))
+  end)
+
+  it("collapses several comments on one line", function()
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    local buf = vim.api.nvim_get_current_buf()
+    comment({ body = "one" })
+    comment({ body = "two" })
+    vim.wait(50)
+    local m = marks(buf)
+    assert.are.same(1, #m)
+    assert.is_not_nil(m[1][4].virt_text[1][1]:find("2 comments:", 1, true))
+  end)
+
+  it("keeps other files' comments out of the buffer", function()
+    comment({})
+    Store.get(fx.cwd):add({
+      turn = "t1",
+      target = "file",
+      file = fx.newfile,
+      rel = "lua/brand.lua",
+      lnum = 1,
+      side = "new",
+      anchor_key = "new:1",
+      anchor = {},
+      body = "elsewhere",
+    })
+    vim.wait(50)
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    assert.are.same(1, #marks(vim.api.nvim_get_current_buf()))
+    vim.cmd.edit(vim.fn.fnameescape(fx.newfile))
+    assert.are.same(1, #marks(vim.api.nvim_get_current_buf()))
+  end)
+
+  it("ignores a comment past the end of the file", function()
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    comment({ lnum = 9999, anchor_key = "new:9999" })
+    vim.wait(50)
+    assert.are.same(0, #marks(vim.api.nvim_get_current_buf()))
+  end)
+
+  it("marks nothing for a response comment", function()
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    Store.get(fx.cwd):add({ turn = "t1", target = "response", anchor_key = "b1:1", anchor = {}, body = "general" })
+    vim.wait(50)
+    assert.are.same(0, #marks(vim.api.nvim_get_current_buf()))
+  end)
+
+  it("opens the review on the comment under the cursor", function()
+    local turns = require("sidekick.review.model").load(fx.cwd).turns
+    local turn = turns[#turns]
+    comment({ turn = turn.id, body = "does this respect log levels?" })
+    vim.wait(50)
+
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    vim.api.nvim_win_set_cursor(0, { 4, 0 })
+    assert.are.same(1, #Review.at_cursor())
+    assert.is_true(Review.open_at())
+
+    local ui = UI.current
+    assert.are.same(turn.id, ui.sel_turn)
+    assert.are.same(fx.file, ui.sel_key)
+    assert.are.same(ui.main.win, vim.api.nvim_get_current_win())
+    -- the thread is opened, not left folded
+    assert.is_not_nil(text(ui.main.buf):find("does this respect log levels?", 1, true))
+  end)
+
+  it("says so when there is no comment on the line", function()
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    assert.is_false(Review.open_at())
+    local said = false
+    for _, n in ipairs(notices) do
+      said = said or n:find("no review comment on this line", 1, true) ~= nil
+    end
+    assert.is_true(said)
+  end)
+
+  it("can be turned off", function()
+    comment({})
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    vim.wait(50)
+    assert.are.same(1, #marks(vim.api.nvim_get_current_buf()))
+
+    local prev = Config.review.signs.enabled
+    Config.review.signs.enabled = false
+    Marks.refresh()
+    assert.are.same(0, #marks(vim.api.nvim_get_current_buf()))
+    Config.review.signs.enabled = prev
+  end)
+end)
+
 describe("review.ui verdicts", function()
   local fx ---@type sidekick.test.ReviewFixture
   local restore_cli, restore_notify, sent, notices

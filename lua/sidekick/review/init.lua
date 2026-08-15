@@ -53,6 +53,22 @@ function M.submit(opts)
   })
 end
 
+--- Open the review on the comment under the cursor in a normal buffer.
+---
+--- The counterpart to the marks: from the code, jump into the conversation
+--- about it.
+---@param opts? sidekick.review.Open
+---@return boolean opened
+function M.open_at(opts)
+  return require("sidekick.review.marks").open_at(opts)
+end
+
+--- Unresolved comments on the cursor line, if any.
+---@return sidekick.review.Comment[]
+function M.at_cursor()
+  return require("sidekick.review.marks").at_cursor()
+end
+
 --- Pick among every recorded session and open the review on it.
 ---
 --- Unlike `open()`, which takes the most recent, this shows all of them —

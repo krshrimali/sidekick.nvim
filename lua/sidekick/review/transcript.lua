@@ -139,8 +139,9 @@ function M.sources(cwd)
 
   local encoded = root .. "/" .. M.encode(cwd)
   if vim.uv.fs_stat(encoded) then
-    -- fast path: the encoded directory name matches exactly
-    pcall(collect, encoded, cwd, ret, false)
+    -- Claude's encoding is lossy, so even the expected directory can contain
+    -- transcripts for a different cwd. Always verify the cwd in the file.
+    pcall(collect, encoded, cwd, ret, true)
   end
 
   if #ret == 0 then

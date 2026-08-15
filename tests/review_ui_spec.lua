@@ -392,6 +392,19 @@ describe("review.ui", function()
     assert.are.same("keep me", reloaded:all()[1].body)
   end)
 
+  it("keeps state separate for cwd names with the same Claude encoding", function()
+    local first = fx.cwd .. "/a_b"
+    local second = fx.cwd .. "/a-b"
+    local a = Store.get(first)
+    local b = Store.get(second)
+    assert.are_not.same(a.file, b.file)
+    a:add({ turn = "t", target = "response", anchor_key = "b1:1", anchor = {}, body = "first" })
+    b:add({ turn = "t", target = "response", anchor_key = "b1:1", anchor = {}, body = "second" })
+    Store.reset()
+    assert.are.same("first", Store.get(first):all()[1].body)
+    assert.are.same("second", Store.get(second):all()[1].body)
+  end)
+
   it("recovers from corrupt state", function()
     local store = Store.get(fx.cwd)
     Fixture.write(store.file, "{{{ not json")

@@ -34,6 +34,20 @@ describe("review.transcript", function()
   it("returns nothing for an unknown cwd", function()
     assert.are.same({}, Transcript.sources(vim.fn.tempname()))
   end)
+
+  it("rejects transcripts from a cwd with the same encoded name", function()
+    local root = vim.fn.tempname()
+    local wanted = root .. "/a_b"
+    local other = root .. "/a-b"
+    local projects = root .. "/projects"
+    local dir = projects .. "/" .. Transcript.encode(wanted)
+    Fixture.write(dir .. "/other.jsonl", vim.json.encode({ type = "user", cwd = other }) .. "\n")
+    local old_root = Transcript.root
+    Transcript.root = projects
+    assert.are.same({}, Transcript.sources(wanted))
+    Transcript.root = old_root
+    vim.fn.delete(root, "rf")
+  end)
 end)
 
 describe("review.model", function()

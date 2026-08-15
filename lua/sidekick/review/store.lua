@@ -61,6 +61,14 @@ local function dir()
   return M.root or Config.state("review")
 end
 
+---@param cwd string
+---@return string
+local function filename(cwd)
+  -- Keep the readable prefix, but add the normalized path hash since Claude's
+  -- directory encoding maps distinct paths such as `a_b` and `a-b` together.
+  return ("%s-%s.json"):format(Transcript.encode(cwd), vim.fn.sha256(cwd):sub(1, 16))
+end
+
 ---@param cwd? string
 ---@return sidekick.review.Store
 function M.get(cwd)
@@ -70,7 +78,7 @@ function M.get(cwd)
   end
   local self = setmetatable({
     cwd = cwd,
-    file = dir() .. "/" .. Transcript.encode(cwd) .. ".json",
+    file = dir() .. "/" .. filename(cwd),
   }, Store)
   self:load()
   cache[cwd] = self

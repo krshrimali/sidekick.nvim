@@ -190,6 +190,8 @@ local state_dir = vim.fn.stdpath("state") .. "/sidekick"
 
 local config = vim.deepcopy(defaults) --[[@as sidekick.Config]]
 M.augroup = vim.api.nvim_create_augroup("sidekick", { clear = true })
+local setup_autocmds = {} ---@type integer[]
+local setup_generation = 0
 
 ---@param name string
 function M.state(name)
@@ -198,6 +200,8 @@ end
 
 ---@param opts? sidekick.Config
 function M.setup(opts)
+  setup_generation = setup_generation + 1
+  local generation = setup_generation
   config = vim.tbl_deep_extend("force", {}, vim.deepcopy(defaults), opts or {})
 
   vim.api.nvim_create_user_command("Sidekick", function(args)
@@ -209,19 +213,27 @@ function M.setup(opts)
     complete = function(_, line)
       return require("sidekick.commands").complete(line)
     end,
+    force = true,
   })
 
   vim.schedule(function()
+    if generation ~= setup_generation then
+      return
+    end
+    for _, id in ipairs(setup_autocmds) do
+      pcall(vim.api.nvim_del_autocmd, id)
+    end
+    setup_autocmds = {}
     vim.fn.mkdir(state_dir, "p")
     M.set_hl()
 
-    vim.api.nvim_create_autocmd("ColorScheme", {
+    setup_autocmds[#setup_autocmds + 1] = vim.api.nvim_create_autocmd("ColorScheme", {
       group = M.augroup,
       callback = M.set_hl,
     })
 
     -- Track when a window was last focused
-    vim.api.nvim_create_autocmd({ "WinEnter" }, {
+    setup_autocmds[#setup_autocmds + 1] = vim.api.nvim_create_autocmd({ "WinEnter" }, {
       group = M.augroup,
       callback = function()
         local win = vim.api.nvim_get_current_win()
@@ -229,9 +241,7 @@ function M.setup(opts)
       end,
     })
 
-    if M.nes.enabled ~= false then
-      require("sidekick.nes").enable()
-    end
+    require("sidekick.nes").enable(M.nes.enabled ~= false)
 
     require("sidekick.status").setup()
 

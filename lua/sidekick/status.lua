@@ -15,6 +15,7 @@ local M = {}
 local status = {} ---@type table<integer, sidekick.lsp.Status>
 local cli_sessions = {} ---@type table<string, sidekick.cli.Status>
 local cli_last_update = 0
+local autocmds = {} ---@type integer[]
 
 local levels = {
   Normal = vim.log.levels.INFO,
@@ -73,8 +74,12 @@ function M.get(buf)
 end
 
 function M.setup()
+  for _, id in ipairs(autocmds) do
+    pcall(vim.api.nvim_del_autocmd, id)
+  end
+  autocmds = {}
   if Config.copilot.status.enabled then
-    vim.api.nvim_create_autocmd("LspAttach", {
+    autocmds[#autocmds + 1] = vim.api.nvim_create_autocmd("LspAttach", {
       group = Config.augroup,
       callback = function(ev)
         local client = vim.lsp.get_client_by_id(ev.data.client_id)
@@ -88,7 +93,7 @@ function M.setup()
     end
   end
 
-  vim.api.nvim_create_autocmd("User", {
+  autocmds[#autocmds + 1] = vim.api.nvim_create_autocmd("User", {
     group = Config.augroup,
     pattern = { "SidekickCliAttach", "SidekickCliDetach" },
     callback = update_cli_status,

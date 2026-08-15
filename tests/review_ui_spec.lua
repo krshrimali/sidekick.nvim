@@ -710,7 +710,8 @@ describe("review marks", function()
       lnum = 4,
       side = "new",
       anchor_key = "new:4",
-      anchor = { "x" },
+      -- anchor on the line's real text: a placeholder would read as drifted
+      anchor = { (vim.split(Fixture.FILE_AFTER, "\n"))[4] },
       body = "why?",
     }, opts))
   end
@@ -798,9 +799,18 @@ describe("review marks", function()
     assert.are.same(1, #marks(vim.api.nvim_get_current_buf()))
   end)
 
-  it("ignores a comment past the end of the file", function()
+  it("recovers a comment whose line is past the end but whose code is still there", function()
     vim.cmd.edit(vim.fn.fnameescape(fx.file))
     comment({ lnum = 9999, anchor_key = "new:9999" })
+    vim.wait(50)
+    local m = marks(vim.api.nvim_get_current_buf())
+    assert.are.same(1, #m)
+    assert.are.same(3, m[1][2]) -- found by its anchor text, on line 4
+  end)
+
+  it("drops a comment that is past the end and unanchorable", function()
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    comment({ lnum = 9999, anchor_key = "new:9999", anchor = { "-- never existed" } })
     vim.wait(50)
     assert.are.same(0, #marks(vim.api.nvim_get_current_buf()))
   end)
@@ -840,6 +850,69 @@ describe("review marks", function()
       said = said or n:find("no review comment on this line", 1, true) ~= nil
     end
     assert.is_true(said)
+  end)
+
+  it("follows the code when the file shifts", function()
+    local Diff = require("sidekick.review.diff")
+    local body = Diff.read(fx.file)
+    local src = vim.split(body, "\n")
+    comment({ anchor = { src[4] }, body = "respect log levels?" })
+
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    vim.wait(30)
+    assert.are.same(3, marks(vim.api.nvim_get_current_buf())[1][2])
+
+    -- two lines inserted above push everything down
+    Fixture.write(fx.file, "-- header\n-- more\n" .. body)
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    vim.wait(30)
+
+    local m = marks(vim.api.nvim_get_current_buf())
+    assert.are.same(5, m[1][2]) -- 0-indexed line 6
+    -- and the store is updated, so the review pane agrees with the buffer
+    assert.are.same(6, Store.get(fx.cwd):find("c1").lnum)
+    assert.are.same("new:6", Store.get(fx.cwd):find("c1").anchor_key)
+  end)
+
+  it("flags a comment whose code changed rather than moving it", function()
+    comment({ anchor = { "-- a line that never existed" }, body = "was this needed?" })
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    vim.wait(30)
+
+    local m = marks(vim.api.nvim_get_current_buf())
+    assert.are.same(1, #m)
+    -- stays where it was recorded, but says the position is a guess
+    assert.are.same(3, m[1][2])
+    assert.is_not_nil(m[1][4].virt_text[1][1]:find("code changed since", 1, true))
+    -- a guessed position is never written back
+    assert.are.same(4, Store.get(fx.cwd):find("c1").lnum)
+  end)
+
+  it("drops a comment whose line no longer exists at all", function()
+    comment({ anchor = { "-- gone" } })
+    Fixture.write(fx.file, "local M = {}\nreturn M\n")
+    vim.cmd.edit(vim.fn.fnameescape(fx.file))
+    vim.wait(30)
+    assert.are.same(0, #marks(vim.api.nvim_get_current_buf()))
+    -- the comment itself survives; it is just not shown against wrong code
+    assert.is_not_nil(Store.get(fx.cwd):find("c1"))
+  end)
+
+  it("resolves a repeated anchor to the nearest match", function()
+    local lines = { "x", "dup", "y", "z", "dup", "w" }
+    local function at(lnum)
+      return (Marks.locate(lines, { anchor = { "dup" }, lnum = lnum }))
+    end
+    assert.are.same(5, at(4))
+    assert.are.same(2, at(3))
+    assert.are.same(5, at(5)) -- an exact hit beats a nearer duplicate
+  end)
+
+  it("matches a multi-line anchor as a block", function()
+    local lines = { "a", "start", "middle", "end", "b", "start", "nope", "end" }
+    local found, exact = Marks.locate(lines, { anchor = { "start", "middle", "end" }, lnum = 6 })
+    assert.are.same(2, found)
+    assert.is_true(exact)
   end)
 
   it("can be turned off", function()

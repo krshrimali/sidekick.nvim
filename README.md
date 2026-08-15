@@ -1084,6 +1084,15 @@ resolved threads stop showing — finished business is just gutter noise.
 `require("sidekick.review").open_at()` jumps from the line into the
 conversation, with that thread unfolded.
 
+**Marks follow the code.** Line numbers go stale as soon as anyone edits the
+file, which is the normal case: you comment, the agent fixes it, everything
+below shifts. The text you commented on is the anchor, not the line number, so
+a mark moves with its code and the store is updated to match. When that text is
+gone — often because the agent changed exactly what you asked about — the
+comment stays at its last known line and says `code changed since` rather than
+pointing confidently at something unrelated. A guessed position is never
+written back.
+
 ```lua
 opts = {
   review = {

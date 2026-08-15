@@ -394,16 +394,18 @@ function UI:reload()
 
   self.rollups = {}
   for _, tr in ipairs(self.transcripts) do
-    -- reconstruction walks a single session's history, so scope it to one
+    -- reconstruction walks a single session's history, so scope the cache to
+    -- one session and rebuild each file's history only once
+    local cache = {}
     for _, turn in ipairs(tr.turns) do
-      self.diffs[turn.id] = Diff.turn(tr.turns, turn)
+      self.diffs[turn.id] = Diff.turn(tr.turns, turn, cache)
     end
     require("sidekick.review.thread").sync(self.cwd, tr)
 
     local rollup = M.rollup(tr)
     if rollup then
       self.rollups[tr.session] = rollup
-      self.diffs[rollup.id] = Diff.session(tr.turns)
+      self.diffs[rollup.id] = Diff.session(tr.turns, cache)
     end
   end
 

@@ -129,12 +129,22 @@ local function undo(content, changes)
 end
 
 --- Compute before/after content for `path` in every turn that touched it.
+---
+--- One walk yields the state at *every* turn, so callers diffing a whole
+--- session should pass a `cache` and pay for each file once. Without it,
+--- diffing T turns across F files costs T*F walks and T*F reads of the same
+--- files — quadratic in the length of the session.
 ---@param turns sidekick.review.Turn[] oldest -> newest
 ---@param path string
+---@param cache? table<string, table> reuse across calls for the same turn list
 ---@return table<string, {before?:string, after?:string}> keyed by turn id
-function M.reconstruct(turns, path)
+function M.reconstruct(turns, path, cache)
+  local states = cache and M.states(cache)
+  if states and states[path] then
+    return states[path]
+  end
   local ret = {} ---@type table<string, {before?:string, after?:string}>
-  local state = M.read(path) ---@type string?
+  local state = M.content(path, cache) ---@type string?
 
   for i = #turns, 1, -1 do
     local turn = turns[i]
@@ -158,6 +168,9 @@ function M.reconstruct(turns, path)
       end
       ret[turn.id] = entry
     end
+  end
+  if states then
+    states[path] = ret
   end
   return ret
 end
@@ -297,10 +310,45 @@ function M.raw_hunks(file)
   return ret
 end
 
+---@class sidekick.review.DiffCache
+---@field states table<string, table> reconstructed history per file
+---@field content table<string, string|false> file contents, `false` when absent
+
+---@param cache table
+---@return table<string, table>
+function M.states(cache)
+  cache.states = cache.states or {}
+  return cache.states
+end
+
+--- Read a file at most once per cache.
+---
+--- The same file is looked at from every turn that touched it — for its
+--- reconstruction, to see whether it still exists, and to check whether it is
+--- binary. Reading it once keeps that from scaling with the length of the
+--- session.
 ---@param path string
----@return boolean
-local function is_binary(path)
+---@param cache? table
+---@return string?
+function M.content(path, cache)
+  if not cache then
+    return M.read(path)
+  end
+  cache.content = cache.content or {}
+  local hit = cache.content[path]
+  if hit ~= nil then
+    return hit or nil
+  end
   local data = M.read(path)
+  cache.content[path] = data or false
+  return data
+end
+
+---@param path string
+---@param cache? table
+---@return boolean
+local function is_binary(path, cache)
+  local data = M.content(path, cache)
   return data ~= nil and data:find("\0", 1, true) ~= nil
 end
 
@@ -308,8 +356,9 @@ end
 ---@param turns sidekick.review.Turn[] full turn list, oldest -> newest
 ---@param turn sidekick.review.Turn
 ---@param file sidekick.review.FileChange
+---@param cache? table<string, table> shared reconstruction cache
 ---@return sidekick.review.FileDiff
-function M.file(turns, turn, file)
+function M.file(turns, turn, file, cache)
   ---@type sidekick.review.FileDiff
   local ret = {
     path = file.path,
@@ -321,11 +370,11 @@ function M.file(turns, turn, file)
     deleted = file.deleted == true,
     approx = false,
     binary = false,
-    missing = M.read(file.path) == nil,
+    missing = M.content(file.path, cache) == nil,
     filetype = vim.filetype.match({ filename = file.path }) or nil,
   }
 
-  if not ret.missing and is_binary(file.path) then
+  if not ret.missing and is_binary(file.path, cache) then
     ret.binary = true
     return ret
   end
@@ -334,7 +383,7 @@ function M.file(turns, turn, file)
     -- a `Delete File` section carries no body, so the content that was lost is
     -- only recoverable when a later turn put the file back. Show it when we
     -- have it; say plainly that it is gone when we do not.
-    local states = M.reconstruct(turns, file.path)[turn.id]
+    local states = M.reconstruct(turns, file.path, cache)[turn.id]
     local before = states and states.before or nil
     if before and before ~= "" then
       ret.hunks = M.hunks(before, "")
@@ -348,7 +397,7 @@ function M.file(turns, turn, file)
     return ret
   end
 
-  local states = M.reconstruct(turns, file.path)[turn.id]
+  local states = M.reconstruct(turns, file.path, cache)[turn.id]
   if states and states.before and states.after then
     ret.hunks = M.hunks(states.before, states.after)
   else
@@ -375,8 +424,9 @@ end
 --- This is the diff you would look at before committing — from the file as it
 --- was when the session started, to how it is now.
 ---@param turns sidekick.review.Turn[] oldest -> newest
+---@param cache? table<string, table> shared reconstruction cache
 ---@return sidekick.review.FileDiff[]
-function M.session(turns)
+function M.session(turns, cache)
   local order = {} ---@type string[]
   local touched = {} ---@type table<string, sidekick.review.FileChange[]>
 
@@ -394,7 +444,7 @@ function M.session(turns)
   for _, path in ipairs(order) do
     local files = touched[path]
     local first, last = files[1], files[#files]
-    local states = M.reconstruct(turns, path)
+    local states = M.reconstruct(turns, path, cache)
 
     -- oldest recorded "before" -> the file as it stands now
     local before ---@type string?
@@ -411,7 +461,7 @@ function M.session(turns)
         end
       end
     end
-    local after = M.read(path)
+    local after = M.content(path, cache)
 
     ---@type sidekick.review.FileDiff
     local diff = {
@@ -430,7 +480,7 @@ function M.session(turns)
 
     if diff.deleted then
       diff.approx = true
-    elseif after and is_binary(path) then
+    elseif after and is_binary(path, cache) then
       diff.binary = true
     elseif before and after then
       diff.hunks = M.hunks(before, after)
@@ -461,13 +511,26 @@ end
 --- Diff every file a turn touched.
 ---@param turns sidekick.review.Turn[]
 ---@param turn sidekick.review.Turn
+---@param cache? table<string, table> shared reconstruction cache
 ---@return sidekick.review.FileDiff[]
-function M.turn(turns, turn)
+function M.turn(turns, turn, cache)
   local ret = {} ---@type sidekick.review.FileDiff[]
   for _, file in ipairs(turn.files) do
-    ret[#ret + 1] = M.file(turns, turn, file)
+    ret[#ret + 1] = M.file(turns, turn, file, cache)
   end
   return ret
+end
+
+--- Diff every turn in a session, reconstructing each file only once.
+---@param turns sidekick.review.Turn[] oldest -> newest
+---@return table<string, sidekick.review.FileDiff[]> turn id -> diffs
+function M.all(turns)
+  local cache = {}
+  local ret = {} ---@type table<string, sidekick.review.FileDiff[]>
+  for _, turn in ipairs(turns) do
+    ret[turn.id] = M.turn(turns, turn, cache)
+  end
+  return ret, cache
 end
 
 return M

@@ -311,6 +311,80 @@ describe("review.diff", function()
   end)
 end)
 
+describe("review.diff caching", function()
+  local fx ---@type sidekick.test.ReviewFixture
+
+  before_each(function()
+    fx = Fixture.setup()
+  end)
+  after_each(function()
+    fx.cleanup()
+  end)
+
+  it("produces identical results with and without a cache", function()
+    local turns = Model.load(fx.cwd).turns
+    for _, turn in ipairs(turns) do
+      local plain = Diff.turn(turns, turn)
+      local cached = Diff.turn(turns, turn, {})
+      assert.are.same(plain, cached)
+    end
+    assert.are.same(Diff.session(turns), Diff.session(turns, {}))
+  end)
+
+  it("shares one reconstruction across every turn", function()
+    local turns = Model.load(fx.cwd).turns
+    local cache = {}
+    local first = Diff.reconstruct(turns, fx.file, cache)
+    -- the same table comes back rather than a fresh walk
+    assert.are.equal(first, Diff.reconstruct(turns, fx.file, cache))
+    assert.are_not.equal(first, Diff.reconstruct(turns, fx.file, {}))
+  end)
+
+  it("reads each file once per cache, not once per turn", function()
+    local turns = Model.load(fx.cwd).turns
+    local paths = {}
+    for _, t in ipairs(turns) do
+      for _, f in ipairs(t.files) do
+        paths[f.path] = true
+      end
+    end
+    local n_files = vim.tbl_count(paths)
+
+    local reads = 0
+    local orig = Diff.read
+    Diff.read = function(path, max)
+      reads = reads + 1
+      return orig(path, max)
+    end
+
+    local cache = {}
+    for _, turn in ipairs(turns) do
+      Diff.turn(turns, turn, cache)
+    end
+    Diff.session(turns, cache)
+    Diff.read = orig
+
+    -- without the cache this grows with turns * files, which is what made a
+    -- long session slow to open
+    assert.are.same(n_files, reads)
+  end)
+
+  it("caches the absence of a file too", function()
+    local cache = {}
+    local missing = fx.cwd .. "/not-here.lua"
+    local reads = 0
+    local orig = Diff.read
+    Diff.read = function(path, max)
+      reads = reads + 1
+      return orig(path, max)
+    end
+    assert.is_nil(Diff.content(missing, cache))
+    assert.is_nil(Diff.content(missing, cache))
+    Diff.read = orig
+    assert.are.same(1, reads)
+  end)
+end)
+
 describe("review.diff session rollup", function()
   local fx ---@type sidekick.test.ReviewFixture
 

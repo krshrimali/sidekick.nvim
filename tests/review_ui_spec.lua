@@ -75,7 +75,7 @@ describe("review.ui", function()
     assert.is_nil(UI.current)
     local warned = false
     for _, n in ipairs(notices) do
-      warned = warned or n:find("no Claude Code transcript", 1, true) ~= nil
+      warned = warned or n:find("no agent transcript", 1, true) ~= nil
     end
     assert.is_true(warned)
   end)
@@ -481,6 +481,167 @@ describe("review.ui", function()
     -- a bordered float owns `row` (top border) through `row + height + 1`
     assert.are.same(main.row + main.height + 2, footer.row)
     assert.is_true(footer.row + 1 <= vim.o.lines - vim.o.cmdheight)
+  end)
+end)
+
+describe("review.ui sessions", function()
+  local fx ---@type sidekick.test.ReviewFixture
+  local restore_cli, restore_notify, notices, prev_codex
+
+  --- Give the same project a Codex rollout, newer than the Claude transcript.
+  ---@return string session id
+  local function add_codex()
+    local root = fx.root .. "/codex/sessions"
+    prev_codex = require("sidekick.review.provider.codex").root
+    require("sidekick.review.provider.codex").root = root
+    local file = fx.cwd .. "/CHANGELOG.md"
+    Fixture.write(file, "# Changelog\n")
+    local entries = {
+      { type = "session_meta", timestamp = "2026-08-15T12:00:00.000Z", payload = { id = "codex-1", cwd = fx.cwd } },
+      {
+        type = "response_item",
+        timestamp = "2026-08-15T12:00:01.000Z",
+        payload = { type = "message", role = "user", content = { { type = "input_text", text = "add a changelog" } } },
+      },
+      {
+        type = "response_item",
+        timestamp = "2026-08-15T12:00:02.000Z",
+        payload = { type = "message", role = "assistant", content = { { type = "output_text", text = "Adding it." } } },
+      },
+      {
+        type = "response_item",
+        timestamp = "2026-08-15T12:00:03.000Z",
+        payload = {
+          type = "custom_tool_call",
+          name = "exec",
+          call_id = "c1",
+          input = 'const p = "*** Begin Patch\\n*** Add File: ' .. file .. '\\n+# Changelog\\n*** End Patch";',
+        },
+      },
+      {
+        type = "response_item",
+        timestamp = "2026-08-15T12:00:04.000Z",
+        payload = { type = "custom_tool_call_output", call_id = "c1", output = "Success." },
+      },
+    }
+    local lines = vim.tbl_map(function(e)
+      return vim.json.encode(e)
+    end, entries)
+    local path = root .. "/2026/08/15/rollout-codex.jsonl"
+    Fixture.write(path, table.concat(lines, "\n") .. "\n")
+    vim.uv.fs_utime(path, os.time(), os.time() + 100)
+    return "codex-1"
+  end
+
+  before_each(function()
+    fx = Fixture.setup()
+    _, restore_cli = Fixture.stub_cli()
+    notices, restore_notify = Fixture.stub_notify()
+  end)
+
+  after_each(function()
+    UI.close()
+    if prev_codex ~= nil then
+      require("sidekick.review.provider.codex").root = prev_codex
+      prev_codex = nil
+    end
+    restore_cli()
+    restore_notify()
+    fx.cleanup()
+  end)
+
+  it("lists sessions from every CLI, newest first", function()
+    add_codex()
+    local sources = Review.sessions(fx.cwd)
+    assert.are.same(2, #sources)
+    assert.are.same("codex", sources[1].provider)
+    assert.are.same("claude", sources[2].provider)
+  end)
+
+  it("opens the newest session and names the agent that wrote it", function()
+    add_codex()
+    local ui = Review.open({ cwd = fx.cwd })
+    assert.are.same("codex", ui.transcript.provider)
+    local sb = text(ui.sidebar.buf)
+    assert.is_not_nil(sb:find("Codex CLI", 1, true))
+    assert.is_nil(sb:find("Claude", 1, true))
+    -- and says there is another one to switch to
+    assert.is_not_nil(sb:find("+1 more (s)", 1, true))
+  end)
+
+  it("switches session with s", function()
+    add_codex()
+    local ui = Review.open({ cwd = fx.cwd })
+    local offered
+    local prev = vim.ui.select
+    vim.ui.select = function(items, _, cb)
+      offered = items
+      for _, item in ipairs(items) do
+        if item.src.provider == "claude" then
+          return cb(item)
+        end
+      end
+      cb(nil)
+    end
+    vim.api.nvim_set_current_win(ui.sidebar.win)
+    feed("s")
+    vim.ui.select = prev
+
+    assert.are.same(2, #offered)
+    assert.are.same("claude", ui.transcript.provider)
+    assert.is_not_nil(text(ui.sidebar.buf):find("Claude Code", 1, true))
+    -- the old selection belongs to a different set of turns
+    assert.are.same(ui.transcript.turns[#ui.transcript.turns].id, ui.sel_turn)
+  end)
+
+  it("keeps comments when switching, since they belong to the project", function()
+    add_codex()
+    local ui = Review.open({ cwd = fx.cwd })
+    Store.get(fx.cwd):add({ turn = ui.sel_turn, target = "response", anchor_key = "b1:1", anchor = {}, body = "note" })
+    local prev = vim.ui.select
+    vim.ui.select = function(items, _, cb)
+      for _, item in ipairs(items) do
+        if item.src.provider == "claude" then
+          return cb(item)
+        end
+      end
+    end
+    vim.api.nvim_set_current_win(ui.sidebar.win)
+    feed("s")
+    vim.ui.select = prev
+    assert.are.same(1, Review.pending(fx.cwd))
+  end)
+
+  it("does not offer a picker for a lone session", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    assert.are.same(1, #ui.sessions)
+    assert.is_nil(text(ui.sidebar.buf):find("more (s)", 1, true))
+    local prev = vim.ui.select
+    vim.ui.select = function()
+      error("the picker must not open")
+    end
+    vim.api.nvim_set_current_win(ui.sidebar.win)
+    feed("s")
+    vim.ui.select = prev
+    local said = false
+    for _, n in ipairs(notices) do
+      said = said or n:find("only session", 1, true) ~= nil
+    end
+    assert.is_true(said)
+  end)
+
+  it("leaves everything alone when the picker is cancelled", function()
+    add_codex()
+    local ui = Review.open({ cwd = fx.cwd })
+    local before = ui.session
+    local prev = vim.ui.select
+    vim.ui.select = function(_, _, cb)
+      cb(nil)
+    end
+    vim.api.nvim_set_current_win(ui.sidebar.win)
+    feed("s")
+    vim.ui.select = prev
+    assert.are.same(before, ui.session)
   end)
 end)
 

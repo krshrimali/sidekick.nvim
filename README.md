@@ -972,6 +972,20 @@ Override per call with `require("sidekick.review").open({ layout = "tab" })`.
 > remembers which tabpage it was opened from and submits from there, so a
 > review living in its own tab still talks to the right agent.
 
+### Sessions
+
+A project usually has several: earlier `claude` runs, a `codex` run, a resumed
+session. The newest is opened by default and the sidebar names the agent that
+wrote it (`Claude Code`, `Codex CLI`) plus how many others exist. Press `s` to
+switch — the picker lists each session with its CLI, turn count and age.
+
+```lua
+require("sidekick.review").sessions() --> every recorded session for the cwd
+require("sidekick.review").open({ session = "4f2a91c…" })
+```
+
+Comments are stored per **project**, not per session, so they survive a switch.
+
 ### Round trip
 
 1. Put the cursor on a diff or response line and press `c` (works on a visual
@@ -1015,6 +1029,7 @@ unit:
 | `<CR>` / `za` | review pane | fold or unfold the thread under the cursor |
 | `zM` / `zR` | review pane | fold or unfold every thread |
 | `o` | review pane | from a thread, jump to the line it annotates |
+| `s` | both | switch to another session for this project |
 | `x` | both | toggle *viewed* for the response or file |
 | `t` | both | expand or collapse the agent's thinking |
 | `]c` / `[c` | review pane | next / previous comment |

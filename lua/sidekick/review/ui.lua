@@ -6,6 +6,7 @@
 local Config = require("sidekick.config")
 local Diff = require("sidekick.review.diff")
 local Model = require("sidekick.review.model")
+local Provider = require("sidekick.review.provider")
 local Render = require("sidekick.review.render")
 local Store = require("sidekick.review.store")
 local Submit = require("sidekick.review.submit")
@@ -46,6 +47,7 @@ end
 ---@field sel_turn? string
 ---@field sel_key? string
 ---@field diffs table<string, sidekick.review.FileDiff[]>
+---@field sessions sidekick.review.Source[]
 ---@field sidebar sidekick.review.Pane
 ---@field main sidekick.review.Pane
 ---@field footer sidekick.review.Pane
@@ -362,6 +364,7 @@ end
 function UI:reload()
   local prev_turn, prev_key = self.sel_turn, self.sel_key
   Diff.ctxlen = (Config.review or {}).context or Diff.ctxlen
+  self.sessions = Model.sessions(self.cwd)
   self.transcript = Model.load(self.cwd, self.session)
   self.diffs = {}
   if not self.transcript then
@@ -400,6 +403,7 @@ function UI:ctx(width)
     transcript = self.transcript,
     store = self.store,
     expanded = self.expanded,
+    sessions = self.sessions,
     collapsed = self.collapsed,
     expanded_threads = self.expanded_threads,
     show_thinking = self.show_thinking,
@@ -839,6 +843,63 @@ function UI:submit(opts)
   })
 end
 
+--- Switch to another session for this project.
+---
+--- A directory often has several: earlier `claude` runs, a `codex` run, a
+--- resumed session. Only the most recent is opened by default, so this is how
+--- you reach the rest — and how you review a Codex turn when a Claude session
+--- happens to be newer.
+function UI:pick_session()
+  local sources = self.sessions or {}
+  if #sources <= 1 then
+    Util.info("sidekick.review: this is the only session for " .. vim.fn.fnamemodify(self.cwd, ":~"))
+    return
+  end
+
+  local items = {} ---@type {src:sidekick.review.Source, label:string}[]
+  for _, src in ipairs(sources) do
+    local provider = Provider.get(src.provider)
+    local turns = 0
+    local ok, tr = pcall(Model.build, src)
+    if ok and tr then
+      turns = #tr.turns
+    end
+    items[#items + 1] = {
+      src = src,
+      label = ("%-12s %s  %s · %d turn%s · %s"):format(
+        provider and provider.label or src.provider,
+        src.session == self.session and "●" or " ",
+        src.session:sub(1, 8),
+        turns,
+        turns == 1 and "" or "s",
+        Render.ago(src.mtime)
+      ),
+    }
+  end
+
+  vim.ui.select(items, {
+    prompt = "Review which session?",
+    format_item = function(item)
+      return item.label
+    end,
+  }, function(choice)
+    if not choice or self.closed or choice.src.session == self.session then
+      return
+    end
+    self.session = choice.src.session
+    -- a different session has different turns; the old selection is meaningless
+    self.sel_turn, self.sel_key = nil, nil
+    self:reload()
+    self:render()
+    self:watch()
+    local provider = Provider.get(choice.src.provider)
+    Util.info(("sidekick.review: now reviewing the %s session %s"):format(
+      provider and provider.label or choice.src.provider,
+      choice.src.session:sub(1, 8)
+    ))
+  end)
+end
+
 function UI:help()
   local lines = {
     "# Sidekick Review",
@@ -884,6 +945,7 @@ function UI:help()
     "under the comment they answer. The transcript is watched, so answers appear",
     "on their own; R forces a refresh.",
     "",
+    "  s           switch to another session for this project",
     "  R           refresh from the transcript",
     "  q / <Esc>   close",
     "",
@@ -964,6 +1026,9 @@ function UI:keymaps(buf, which)
   map("n", "A", function()
     self:submit({ all = true })
   end, "submit all")
+  map("n", "s", function()
+    self:pick_session()
+  end, "pick a session")
   map("n", "J", function()
     self:cycle(1)
   end, "next item")
@@ -1061,6 +1126,12 @@ end
 function UI:watch()
   if not self.transcript then
     return
+  end
+  -- switching sessions re-arms this, so drop the handle watching the old file
+  if self.watcher then
+    pcall(self.watcher.stop, self.watcher)
+    pcall(self.watcher.close, self.watcher)
+    self.watcher = nil
   end
   local file = self.transcript.file
   local handle = vim.uv.new_fs_event()
@@ -1193,9 +1264,9 @@ function M.open(opts)
   self:reload()
   if not self.transcript then
     Util.warn(
-      "sidekick.review: no Claude Code transcript found for "
+      "sidekick.review: no agent transcript found for "
         .. cwd
-        .. "\nStart a Claude session in this directory first."
+        .. "\nStart a `claude` or `codex` session in this directory first."
     )
     return nil
   end

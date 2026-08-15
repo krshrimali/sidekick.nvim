@@ -53,6 +53,16 @@ function M.submit(opts)
   })
 end
 
+--- Every agent session recorded for `cwd`, newest first.
+---
+--- Each entry names the CLI that wrote it, so a project with both a `claude`
+--- and a `codex` history reports both.
+---@param cwd? string
+---@return sidekick.review.Source[]
+function M.sessions(cwd)
+  return Model.sessions(cwd)
+end
+
 --- Number of comments waiting to be sent. Useful in a statusline.
 ---@param cwd? string
 ---@return integer

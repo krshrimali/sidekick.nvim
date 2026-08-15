@@ -4,6 +4,7 @@
 --- highlight ranges plus the item the line represents. No window or buffer API
 --- is touched, so the whole UI can be asserted on in tests.
 local Markdown = require("sidekick.review.markdown")
+local Provider = require("sidekick.review.provider")
 local Store = require("sidekick.review.store")
 local Treesitter = require("sidekick.treesitter")
 
@@ -37,6 +38,7 @@ local M = {}
 ---@field sel_turn? string
 ---@field sel_key? string
 ---@field diffs table<string, sidekick.review.FileDiff[]> turn id -> diffs
+---@field sessions? sidekick.review.Source[] every session available for this cwd
 ---@field collapsed table<string, boolean> comment id -> explicitly collapsed
 ---@field expanded_threads table<string, boolean> comment id -> explicitly expanded
 ---@field width integer
@@ -198,9 +200,17 @@ function M.sidebar(ctx)
     lines[#lines + 1] = { text = text, hl = hl, item = item }
   end
 
-  add(" Claude Review", { { 0, -1, "SidekickReviewTitle" } }, { kind = "header" })
+  -- name the agent whose work is being reviewed, not whichever one shipped first
+  local provider = ctx.transcript and Provider.get(ctx.transcript.provider) or nil
+  add(" " .. (provider and provider.label or "Review"), { { 0, -1, "SidekickReviewTitle" } }, { kind = "header" })
+
   local sess = ctx.transcript and ctx.transcript.session:sub(1, 8) or "?"
-  add(" session " .. sess, { { 0, -1, "SidekickReviewDim" } }, { kind = "header" })
+  local more = ctx.sessions and #ctx.sessions > 1 and ("  +%d more (s)"):format(#ctx.sessions - 1) or ""
+  local left = " session " .. sess
+  add(left .. more, {
+    { 0, #left, "SidekickReviewDim" },
+    { #left, -1, more ~= "" and "SidekickReviewPending" or "SidekickReviewDim" },
+  }, { kind = "header" })
   add(string.rep("─", W), { { 0, -1, "SidekickReviewSep" } }, { kind = "blank" })
 
   local turns = ctx.transcript and ctx.transcript.turns or {}

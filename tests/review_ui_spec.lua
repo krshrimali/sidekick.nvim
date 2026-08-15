@@ -558,18 +558,41 @@ describe("review.ui sessions", function()
     assert.are.same("claude", sources[2].provider)
   end)
 
-  it("opens the newest session and names the agent that wrote it", function()
+  it("shows the whole repository by default, grouped by session", function()
     add_codex()
     local ui = Review.open({ cwd = fx.cwd })
-    assert.are.same("codex", ui.transcript.provider)
+    assert.are.same(2, #ui.transcripts)
+    assert.is_nil(ui.session)
+    -- the newest is the one selected, but both are in view
+    assert.are.same("codex", ui.transcripts[1].provider)
     local sb = text(ui.sidebar.buf)
+    assert.is_not_nil(sb:find("2 sessions", 1, true))
     assert.is_not_nil(sb:find("Codex CLI", 1, true))
-    assert.is_nil(sb:find("Claude", 1, true))
-    -- and says there is another one to switch to
-    assert.is_not_nil(sb:find("+1 more (s)", 1, true))
+    assert.is_not_nil(sb:find("Claude Code", 1, true))
   end)
 
-  it("switches session with s", function()
+  it("watches every session in view", function()
+    add_codex()
+    local ui = Review.open({ cwd = fx.cwd })
+    assert.are.same(2, #ui.watchers)
+  end)
+
+  it("expands and collapses a session group", function()
+    add_codex()
+    local ui = Review.open({ cwd = fx.cwd })
+    local row = row_where(ui.sidebar, function(it)
+      return it.kind == "session"
+    end)
+    assert.is_not_nil(row)
+    local id = ui.sidebar.lines[row].item.session
+    local before = ui.expanded[id]
+    vim.api.nvim_set_current_win(ui.sidebar.win)
+    vim.api.nvim_win_set_cursor(ui.sidebar.win, { row, 0 })
+    feed("<CR>")
+    assert.are_not.same(before, ui.expanded[id])
+  end)
+
+  it("narrows to one session with s, and widens again", function()
     add_codex()
     local ui = Review.open({ cwd = fx.cwd })
     local offered
@@ -589,12 +612,32 @@ describe("review.ui sessions", function()
 
     assert.are.same(2, #offered)
     assert.are.same("claude", ui.transcript.provider)
-    assert.is_not_nil(text(ui.sidebar.buf):find("Claude Code", 1, true))
-    -- the old selection belongs to a different set of turns
+    assert.are.same(1, #ui.transcripts)
+    assert.is_not_nil(text(ui.sidebar.buf):find("1 session (s: all)", 1, true))
+    -- the old selection belonged to a different set of turns
     assert.are.same(ui.transcript.turns[#ui.transcript.turns].id, ui.sel_turn)
+
+    -- pressing s while narrowed widens back, without a picker
+    vim.ui.select = function()
+      error("no picker when widening")
+    end
+    feed("s")
+    vim.ui.select = prev
+    assert.is_nil(ui.session)
+    assert.are.same(2, #ui.transcripts)
   end)
 
-  it("keeps comments when switching, since they belong to the project", function()
+  it("labels a session by its opening prompt, not its id", function()
+    add_codex()
+    local sources = Review.sessions(fx.cwd)
+    local label = UI.describe(sources[1])
+    assert.is_not_nil(label:find("Codex CLI", 1, true))
+    assert.is_not_nil(label:find("add a changelog", 1, true))
+    assert.is_not_nil(label:find("turn", 1, true))
+    assert.is_not_nil(label:find("file", 1, true))
+  end)
+
+  it("keeps comments when narrowing, since they belong to the project", function()
     add_codex()
     local ui = Review.open({ cwd = fx.cwd })
     Store.get(fx.cwd):add({ turn = ui.sel_turn, target = "response", anchor_key = "b1:1", anchor = {}, body = "note" })
@@ -615,7 +658,8 @@ describe("review.ui sessions", function()
   it("does not offer a picker for a lone session", function()
     local ui = Review.open({ cwd = fx.cwd })
     assert.are.same(1, #ui.sessions)
-    assert.is_nil(text(ui.sidebar.buf):find("more (s)", 1, true))
+    -- a single session needs no grouping row
+    assert.is_nil(text(ui.sidebar.buf):find("Claude Code", 1, true))
     local prev = vim.ui.select
     vim.ui.select = function()
       error("the picker must not open")

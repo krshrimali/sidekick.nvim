@@ -974,17 +974,44 @@ Override per call with `require("sidekick.review").open({ layout = "tab" })`.
 
 ### Sessions
 
-A project usually has several: earlier `claude` runs, a `codex` run, a resumed
-session. The newest is opened by default and the sidebar names the agent that
-wrote it (`Claude Code`, `Codex CLI`) plus how many others exist. Press `s` to
-switch — the picker lists each session with its CLI, turn count and age.
+**The whole repository is in view by default.** A project accumulates sessions —
+earlier `claude` runs, a `codex` run, a resumed one — and which session a change
+landed in is rarely what you remember. So the sidebar groups them, newest first:
 
-```lua
-require("sidekick.review").sessions() --> every recorded session for the cwd
-require("sidekick.review").open({ session = "4f2a91c…" })
+```text
+ Review
+ 3 sessions · 9 turns
+──────────────────────────────────────
+▾ Claude Code · 6daec8b3         6  5m
+  ▾ #6 how do I view all sessions?  5m
+      󰭹 Response
+  ▸ #5 so codex is now supported?  28m
+▾ Claude Code · 965daacd         1  9h
+▾ Codex CLI                      2  1h
+  ▸ #2 Saare bugs pehle resolve…   1h
 ```
 
-Comments are stored per **project**, not per session, so they survive a switch.
+`<CR>` on a group folds it. Every session in view is watched, so a turn landing
+in any of them shows up on its own.
+
+Press `s` to **narrow** to a single session when a project has enough history
+that one run is all you care about; `s` again widens back. The picker labels
+each session by its opening prompt rather than its id:
+
+```text
+● Claude Code  how do I view all sessions?      6 turns · 31 files · Aug 15 23:39
+  Codex CLI    Iss poore repository ko review…  2 turns · 14 files · Aug 15 22:53
+```
+
+`:Sidekick review sessions` opens that picker without opening a review first.
+
+```lua
+require("sidekick.review").sessions()               --> every recorded session
+require("sidekick.review").pick()                   --> choose one, then open
+require("sidekick.review").open({ session = "4f2…" }) --> straight to one
+```
+
+Comments are stored per **project**, not per session, so they survive narrowing.
 
 ### Round trip
 
@@ -1029,7 +1056,8 @@ unit:
 | `<CR>` / `za` | review pane | fold or unfold the thread under the cursor |
 | `zM` / `zR` | review pane | fold or unfold every thread |
 | `o` | review pane | from a thread, jump to the line it annotates |
-| `s` | both | switch to another session for this project |
+| `<CR>` | sidebar | on a session group: fold or unfold it |
+| `s` | both | narrow to one session / widen back to the whole project |
 | `x` | both | toggle *viewed* for the response or file |
 | `t` | both | expand or collapse the agent's thinking |
 | `]c` / `[c` | review pane | next / previous comment |
@@ -1048,6 +1076,7 @@ unit:
 | `:Sidekick review toggle` | toggle it |
 | `:Sidekick review open layout="tab"` | open in its own tabpage |
 | `:Sidekick review close` | close it |
+| `:Sidekick review sessions` | pick a session, then open the review on it |
 | `:Sidekick review submit` | send pending comments without opening the UI |
 | `:Sidekick review submit all=true` | send pending comments from every turn |
 | `:Sidekick review clear` | drop the latest turn's comments |

@@ -48,10 +48,12 @@ end
 ---@field sel_key? string
 ---@field diffs table<string, sidekick.review.FileDiff[]>
 ---@field sessions sidekick.review.Source[]
+---@field transcripts sidekick.review.Transcript[] every session in view, newest first
 ---@field sidebar sidekick.review.Pane
 ---@field main sidekick.review.Pane
 ---@field footer sidekick.review.Pane
----@field watcher? uv.uv_fs_event_t
+---@field watcher? uv.uv_fs_event_t most recently armed watcher
+---@field watchers uv.uv_fs_event_t[] one per transcript in view
 ---@field watch_refresh? function
 ---@field autocmds integer[]
 ---@field closed boolean
@@ -361,46 +363,75 @@ end
 -- data
 --------------------------------------------------------------------------------
 
+--- Load every session for the project, newest first.
+---
+--- The whole repository is in view by default: a directory accumulates
+--- sessions (earlier `claude` runs, a `codex` run, a resumed one) and which of
+--- them a change landed in is rarely what you remember. `self.session` narrows
+--- to one when you ask for it.
 function UI:reload()
   local prev_turn, prev_key = self.sel_turn, self.sel_key
   Diff.ctxlen = (Config.review or {}).context or Diff.ctxlen
   self.sessions = Model.sessions(self.cwd)
-  self.transcript = Model.load(self.cwd, self.session)
   self.diffs = {}
+  self.transcripts = {}
+
+  for _, src in ipairs(self.sessions) do
+    if not self.session or src.session == self.session then
+      local ok, tr = pcall(Model.build, src)
+      if ok and tr and #tr.turns > 0 then
+        self.transcripts[#self.transcripts + 1] = tr
+      end
+    end
+  end
+
+  -- the newest session is the one you almost always mean
+  self.transcript = self.transcripts[1]
   if not self.transcript then
     return
   end
-  self.session = self.transcript.session
-  for _, turn in ipairs(self.transcript.turns) do
-    self.diffs[turn.id] = Diff.turn(self.transcript.turns, turn)
+
+  for _, tr in ipairs(self.transcripts) do
+    -- reconstruction walks a single session's history, so scope it to one
+    for _, turn in ipairs(tr.turns) do
+      self.diffs[turn.id] = Diff.turn(tr.turns, turn)
+    end
+    require("sidekick.review.thread").sync(self.cwd, tr)
   end
 
   -- keep the selection if it still exists, else fall back to the newest turn
-  local exists = false
-  for _, t in ipairs(self.transcript.turns) do
-    if t.id == prev_turn then
-      exists = true
-      break
-    end
-  end
-  if not exists then
+  if prev_turn and self:turn(prev_turn) then
+    self.sel_turn, self.sel_key = prev_turn, prev_key or Store.RESPONSE
+  else
     local last = self.transcript.turns[#self.transcript.turns]
     self.sel_turn = last and last.id or nil
     self.sel_key = Store.RESPONSE
     if self.sel_turn then
       self.expanded[self.sel_turn] = true
+      self.expanded[self.transcript.session] = true
     end
-  else
-    self.sel_turn, self.sel_key = prev_turn, prev_key or Store.RESPONSE
   end
+end
 
-  require("sidekick.review.thread").sync(self.cwd, self.transcript)
+--- The transcript a turn belongs to.
+---@param turn_id? string
+---@return sidekick.review.Transcript?
+function UI:transcript_of(turn_id)
+  for _, tr in ipairs(self.transcripts or {}) do
+    for _, t in ipairs(tr.turns) do
+      if t.id == turn_id then
+        return tr
+      end
+    end
+  end
 end
 
 ---@return sidekick.review.Ctx
 function UI:ctx(width)
   return {
     transcript = self.transcript,
+    transcripts = self.transcripts,
+    session = self.session,
     store = self.store,
     expanded = self.expanded,
     sessions = self.sessions,
@@ -414,11 +445,15 @@ function UI:ctx(width)
   }
 end
 
+---@param turn_id? string defaults to the selected turn
 ---@return sidekick.review.Turn?
-function UI:turn()
-  for _, t in ipairs(self.transcript and self.transcript.turns or {}) do
-    if t.id == self.sel_turn then
-      return t
+function UI:turn(turn_id)
+  turn_id = turn_id or self.sel_turn
+  for _, tr in ipairs(self.transcripts or {}) do
+    for _, t in ipairs(tr.turns) do
+      if t.id == turn_id then
+        return t
+      end
     end
   end
 end
@@ -496,6 +531,11 @@ function UI:activate(opts)
   opts = opts or {}
   local item = item_at(self.sidebar)
   if not item then
+    return
+  end
+  if item.kind == "session" then
+    self.expanded[item.session] = not self.expanded[item.session]
+    self:render({ keep_cursor = true })
     return
   end
   if item.kind == "turn" then
@@ -843,61 +883,122 @@ function UI:submit(opts)
   })
 end
 
---- Switch to another session for this project.
+--- Describe a session the way you would recognise it: what you asked it, when,
+--- and how much it did — not its uuid.
+---@param src sidekick.review.Source
+---@param opts? {current?:string}
+---@return string label, sidekick.review.Transcript?
+function M.describe(src, opts)
+  opts = opts or {}
+  local provider = Provider.get(src.provider)
+  local ok, tr = pcall(Model.build, src)
+  local turns = ok and tr and #tr.turns or 0
+
+  local files = {} ---@type table<string, boolean>
+  local title = "(no prompt yet)"
+  if ok and tr and turns > 0 then
+    -- the opening prompt is what you actually remember a session by
+    title = tr.turns[1].title
+    for _, t in ipairs(tr.turns) do
+      for _, f in ipairs(t.files) do
+        files[f.path] = true
+      end
+    end
+  end
+
+  local n_files = vim.tbl_count(files)
+  local when = os.date("%b %d %H:%M", math.floor(src.mtime)) --[[@as string]]
+  local meta = ("%d turn%s · %d file%s · %s"):format(
+    turns,
+    turns == 1 and "" or "s",
+    n_files,
+    n_files == 1 and "" or "s",
+    when
+  )
+
+  return ("%s %-11s  %-52s  %s"):format(
+    src.session == opts.current and "●" or " ",
+    provider and provider.label or src.provider,
+    #title > 52 and (title:sub(1, 51) .. "…") or title,
+    meta
+  ),
+    ok and tr or nil
+end
+
+--- Choose among every session recorded for a project.
 ---
---- A directory often has several: earlier `claude` runs, a `codex` run, a
---- resumed session. Only the most recent is opened by default, so this is how
---- you reach the rest — and how you review a Codex turn when a Claude session
---- happens to be newer.
+--- A directory collects them over time: earlier `claude` runs, a `codex` run, a
+--- resumed session. Only the most recent opens by default, so this is how you
+--- reach the rest — including how you review a Codex turn when a Claude
+--- session happens to be newer.
+---@param opts {cwd:string, sources?:sidekick.review.Source[], current?:string, on_choice:fun(src:sidekick.review.Source)}
+function M.select_session(opts)
+  local sources = opts.sources or Model.sessions(opts.cwd)
+  if #sources == 0 then
+    Util.warn("sidekick.review: no sessions recorded for " .. vim.fn.fnamemodify(opts.cwd, ":~"))
+    return
+  end
+
+  local items = {} ---@type {src:sidekick.review.Source, label:string}[]
+  for _, src in ipairs(sources) do
+    items[#items + 1] = { src = src, label = (M.describe(src, { current = opts.current })) }
+  end
+
+  vim.ui.select(items, {
+    prompt = ("Sessions in %s"):format(vim.fn.fnamemodify(opts.cwd, ":~")),
+    format_item = function(item)
+      return item.label
+    end,
+  }, function(choice)
+    if choice then
+      opts.on_choice(choice.src)
+    end
+  end)
+end
+
+--- Narrow the review to one session, or widen it back to the whole project.
+---
+--- The default is the whole repository. Narrowing is for when a project has
+--- accumulated enough history that one session's turns are all you care about.
 function UI:pick_session()
   local sources = self.sessions or {}
   if #sources <= 1 then
     Util.info("sidekick.review: this is the only session for " .. vim.fn.fnamemodify(self.cwd, ":~"))
     return
   end
-
-  local items = {} ---@type {src:sidekick.review.Source, label:string}[]
-  for _, src in ipairs(sources) do
-    local provider = Provider.get(src.provider)
-    local turns = 0
-    local ok, tr = pcall(Model.build, src)
-    if ok and tr then
-      turns = #tr.turns
-    end
-    items[#items + 1] = {
-      src = src,
-      label = ("%-12s %s  %s · %d turn%s · %s"):format(
-        provider and provider.label or src.provider,
-        src.session == self.session and "●" or " ",
-        src.session:sub(1, 8),
-        turns,
-        turns == 1 and "" or "s",
-        Render.ago(src.mtime)
-      ),
-    }
-  end
-
-  vim.ui.select(items, {
-    prompt = "Review which session?",
-    format_item = function(item)
-      return item.label
-    end,
-  }, function(choice)
-    if not choice or self.closed or choice.src.session == self.session then
-      return
-    end
-    self.session = choice.src.session
-    -- a different session has different turns; the old selection is meaningless
+  if self.session then
+    -- already narrowed: `s` widens back to everything
+    self.session = nil
     self.sel_turn, self.sel_key = nil, nil
     self:reload()
     self:render()
     self:watch()
-    local provider = Provider.get(choice.src.provider)
-    Util.info(("sidekick.review: now reviewing the %s session %s"):format(
-      provider and provider.label or choice.src.provider,
-      choice.src.session:sub(1, 8)
-    ))
-  end)
+    Util.info(("sidekick.review: showing all %d sessions"):format(#sources))
+    return
+  end
+  M.select_session({
+    cwd = self.cwd,
+    sources = sources,
+    current = self.session,
+    on_choice = function(src)
+      if self.closed then
+        return
+      end
+      self.session = src.session
+      -- a different session has different turns; the old selection means nothing
+      self.sel_turn, self.sel_key = nil, nil
+      self:reload()
+      self:render()
+      self:watch()
+      local provider = Provider.get(src.provider)
+      Util.info(
+        ("sidekick.review: narrowed to the %s session %s — press s again for all"):format(
+          provider and provider.label or src.provider,
+          src.session:sub(1, 8)
+        )
+      )
+    end,
+  })
 end
 
 function UI:help()
@@ -907,9 +1008,12 @@ function UI:help()
     "Every agent turn is a pull request: a prompt, a response, and changed files.",
     "Works with Claude Code and Codex.",
     "",
+    "The whole repository is in view: every session for this project, newest",
+    "first, grouped by the CLI that wrote it.",
+    "",
     "## Navigation",
     "  <Tab>       switch between the sidebar and the review pane",
-    "  <CR>        sidebar: expand a turn / open an item (and focus it)",
+    "  <CR>        sidebar: fold a session group / expand a turn / open an item",
     "  o           sidebar: open without leaving the sidebar",
     "  J / K       next / previous item, previewing as you go",
     "  ]c / [c     next / previous comment",
@@ -945,7 +1049,8 @@ function UI:help()
     "under the comment they answer. The transcript is watched, so answers appear",
     "on their own; R forces a refresh.",
     "",
-    "  s           switch to another session for this project",
+    "  s           narrow to one session, or widen back to the whole project",
+    "              (`:Sidekick review sessions` picks one without opening first)",
     "  R           refresh from the transcript",
     "  q / <Esc>   close",
     "",
@@ -1127,29 +1232,53 @@ function UI:watch()
   if not self.transcript then
     return
   end
-  -- switching sessions re-arms this, so drop the handle watching the old file
-  if self.watcher then
-    pcall(self.watcher.stop, self.watcher)
-    pcall(self.watcher.close, self.watcher)
-    self.watcher = nil
+  self:unwatch()
+  -- with the whole project in view, any session can be the one still being
+  -- written to, so watch them all
+  for _, tr in ipairs(self.transcripts or {}) do
+    self:watch_file(tr.file)
   end
-  local file = self.transcript.file
+end
+
+--- Stop every file watcher.
+function UI:unwatch()
+  for _, handle in ipairs(self.watchers or {}) do
+    pcall(handle.stop, handle)
+    pcall(handle.close, handle)
+  end
+  self.watchers = {}
+  self.watcher = nil
+  if self.watch_refresh then
+    Util.close_debounce(self.watch_refresh)
+    self.watch_refresh = nil
+  end
+end
+
+--- Watch one transcript file, refreshing the review when it grows.
+---@param file string
+function UI:watch_file(file)
   local handle = vim.uv.new_fs_event()
   if not handle then
     return
   end
-  local refresh = Util.debounce(function()
-    if self.closed then
-      return
-    end
-    self:reload()
-    self:render({ keep_cursor = true })
-  end, 400)
-  self.watch_refresh = refresh
+  -- one debounce shared by every watcher: several sessions changing at once
+  -- should still cost a single reload
+  self.watch_refresh = self.watch_refresh
+    or Util.debounce(function()
+      if self.closed then
+        return
+      end
+      self:reload()
+      self:render({ keep_cursor = true })
+    end, 400)
+  local refresh = self.watch_refresh
+
   local ok = pcall(handle.start, handle, file, {}, function()
     vim.schedule(refresh)
   end)
   if ok then
+    self.watchers = self.watchers or {}
+    self.watchers[#self.watchers + 1] = handle
     self.watcher = handle
   else
     pcall(handle.close, handle)
@@ -1161,15 +1290,7 @@ function UI:close()
     return
   end
   self.closed = true
-  if self.watcher then
-    pcall(self.watcher.stop, self.watcher)
-    pcall(self.watcher.close, self.watcher)
-    self.watcher = nil
-  end
-  if self.watch_refresh then
-    Util.close_debounce(self.watch_refresh)
-    self.watch_refresh = nil
-  end
+  self:unwatch()
   for _, id in ipairs(self.autocmds or {}) do
     pcall(vim.api.nvim_del_autocmd, id)
   end

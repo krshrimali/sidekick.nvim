@@ -53,6 +53,28 @@ function M.submit(opts)
   })
 end
 
+--- Pick among every recorded session and open the review on it.
+---
+--- Unlike `open()`, which takes the most recent, this shows all of them —
+--- earlier runs and other CLIs included — labelled by their opening prompt.
+---@param opts? sidekick.review.Open
+function M.pick(opts)
+  opts = opts or {}
+  local cwd = vim.fs.normalize(opts.cwd or vim.uv.cwd() or ".")
+
+  -- when a review is already open, switch it in place
+  if UI.current and not UI.current.closed and UI.current.cwd == cwd then
+    return UI.current:pick_session()
+  end
+
+  UI.select_session({
+    cwd = cwd,
+    on_choice = function(src)
+      M.open(vim.tbl_extend("force", opts, { cwd = cwd, session = src.session }))
+    end,
+  })
+end
+
 --- Every agent session recorded for `cwd`, newest first.
 ---
 --- Each entry names the CLI that wrote it, so a project with both a `claude`

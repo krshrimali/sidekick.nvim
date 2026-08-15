@@ -339,6 +339,7 @@ function M.set_hl()
     ReviewTurn = "Special",
     ReviewTurnSel = "Title",
     ReviewSelected = "Title",
+    ReviewSession = "Directory",
     ReviewViewed = "Comment",
     ReviewStat = "Number",
     ReviewPending = "DiagnosticWarn",

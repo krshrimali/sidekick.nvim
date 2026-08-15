@@ -59,8 +59,10 @@ local function content_text(content)
   return table.concat(parts, "\n")
 end
 
---- Codex prefixes several housekeeping messages to every session; none of them
---- is something the user typed.
+--- Codex delivers project context as ordinary user messages: the environment
+--- block, the skill list, and the repository's AGENTS.md wrapped in
+--- `<INSTRUCTIONS>`. None of it is something the user typed, so none of it
+--- should open a turn.
 ---@param text string
 ---@return boolean
 local function is_noise(text)
@@ -70,6 +72,10 @@ local function is_noise(text)
     or text:match("^%s*<skills_instructions>") ~= nil
     or text:match("^%s*<multi_agent_mode>") ~= nil
     or text:match("^%s*<[%w_]+_instructions>") ~= nil
+    or text:match("^%s*<INSTRUCTIONS>") ~= nil
+    -- "# AGENTS.md instructions for /path" followed by the file's contents
+    or text:match("^%s*#%s*[%w_.-]+%.md instructions for ") ~= nil
+    or text:find("<INSTRUCTIONS>", 1, true) ~= nil
 end
 
 ---@param dir string

@@ -13,7 +13,7 @@ local M = {}
 ---@alias sidekick.review.HL { [1]:integer, [2]:integer, [3]:string } col_start, col_end (exclusive, -1 = eol), group
 
 ---@class sidekick.review.Item
----@field kind "turn"|"file"|"response"|"diff"|"comment"|"reply"|"text"|"tool"|"hunk"|"prompt"|"blank"|"header"
+---@field kind "session"|"turn"|"file"|"response"|"threads"|"diff"|"comment"|"reply"|"text"|"code"|"tool"|"hunk"|"prompt"|"blank"|"header"
 ---@field turn? string
 ---@field file? string file path (diff view)
 ---@field lnum? integer line number in the file
@@ -22,6 +22,7 @@ local M = {}
 ---@field anchor_key? string stable id used to re-attach comments across renders
 ---@field anchor? string the source text of this line
 ---@field comment? sidekick.review.Comment
+---@field session? string sidebar session group
 ---@field key? string sidebar item key (`@response` or a path)
 ---@field diff? sidekick.review.FileDiff
 
@@ -38,6 +39,8 @@ local M = {}
 ---@field sel_turn? string
 ---@field sel_key? string
 ---@field diffs table<string, sidekick.review.FileDiff[]> turn id -> diffs
+---@field transcripts? sidekick.review.Transcript[] every session in view, newest first
+---@field session? string set when narrowed to a single session
 ---@field sessions? sidekick.review.Source[] every session available for this cwd
 ---@field collapsed table<string, boolean> comment id -> explicitly collapsed
 ---@field expanded_threads table<string, boolean> comment id -> explicitly expanded
@@ -200,28 +203,69 @@ function M.sidebar(ctx)
     lines[#lines + 1] = { text = text, hl = hl, item = item }
   end
 
-  -- name the agent whose work is being reviewed, not whichever one shipped first
-  local provider = ctx.transcript and Provider.get(ctx.transcript.provider) or nil
-  add(" " .. (provider and provider.label or "Review"), { { 0, -1, "SidekickReviewTitle" } }, { kind = "header" })
+  add(" Review", { { 0, -1, "SidekickReviewTitle" } }, { kind = "header" })
 
-  local sess = ctx.transcript and ctx.transcript.session:sub(1, 8) or "?"
-  local more = ctx.sessions and #ctx.sessions > 1 and ("  +%d more (s)"):format(#ctx.sessions - 1) or ""
-  local left = " session " .. sess
-  add(left .. more, {
-    { 0, #left, "SidekickReviewDim" },
-    { #left, -1, more ~= "" and "SidekickReviewPending" or "SidekickReviewDim" },
+  local transcripts = ctx.transcripts or {}
+  local n_turns = 0
+  for _, tr in ipairs(transcripts) do
+    n_turns = n_turns + #tr.turns
+  end
+  local scope = ctx.session and "1 session (s: all)"
+    or ("%d session%s"):format(#transcripts, #transcripts == 1 and "" or "s")
+  add((" %s · %d turn%s"):format(scope, n_turns, n_turns == 1 and "" or "s"), {
+    { 0, -1, "SidekickReviewDim" },
   }, { kind = "header" })
   add(string.rep("─", W), { { 0, -1, "SidekickReviewSep" } }, { kind = "blank" })
 
-  local turns = ctx.transcript and ctx.transcript.turns or {}
-  if #turns == 0 then
-    add(" no turns found", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank" })
+  if #transcripts == 0 then
+    add(" no sessions found", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank" })
     return lines
   end
 
+  -- two runs of the same CLI look identical otherwise
+  local seen = {} ---@type table<string, integer>
+  for _, tr in ipairs(transcripts) do
+    seen[tr.provider] = (seen[tr.provider] or 0) + 1
+  end
+
+  ---@param tr sidekick.review.Transcript
+  local function session_header(tr)
+    local provider = Provider.get(tr.provider)
+    local open = ctx.expanded[tr.session] == true
+    local label = provider and provider.label or tr.provider
+    if (seen[tr.provider] or 0) > 1 then
+      label = label .. " · " .. tr.session:sub(1, 8)
+    end
+    local newest = tr.turns[#tr.turns]
+    local when = newest and M.ago(newest.ts) or ""
+    local count = ("%d"):format(#tr.turns)
+    local prefix = open and M.icons.expanded or M.icons.collapsed
+    local right = count .. "  " .. when
+    local avail = W - vim.fn.strdisplaywidth(prefix) - vim.fn.strdisplaywidth(right) - 1
+    local text = prefix .. pad(trunc(label, math.max(avail, 4)), math.max(avail, 4)) .. " " .. right
+    add(text, {
+      { 0, #prefix, "SidekickReviewSession" },
+      { #prefix, #text - #right, "SidekickReviewSession" },
+      { #text - #right, -1, "SidekickReviewDim" },
+    }, { kind = "session", session = tr.session })
+  end
+
+  -- more than one session in view: group them, so a repository reads as a
+  -- history rather than as one flat list of unrelated turns
+  local grouped = #transcripts > 1
+  local indent = grouped and "  " or ""
+
+  for _, tr in ipairs(transcripts) do
+    if grouped then
+      session_header(tr)
+      if ctx.expanded[tr.session] ~= true then
+        goto continue
+      end
+    end
+
   -- newest first: the turn you want to review is almost always the last one
-  for i = #turns, 1, -1 do
-    local turn = turns[i]
+  for i = #tr.turns, 1, -1 do
+    local turn = tr.turns[i]
     local open = ctx.expanded[turn.id] == true
     local sel = ctx.sel_turn == turn.id
 
@@ -234,7 +278,7 @@ function M.sidebar(ctx)
     end
 
     local when = M.ago(turn.ts)
-    local prefix = (open and M.icons.expanded or M.icons.collapsed) .. ("#%d "):format(turn.idx)
+    local prefix = indent .. (open and M.icons.expanded or M.icons.collapsed) .. ("#%d "):format(turn.idx)
     local badge = n_pending > 0 and (" %s%d"):format(M.icons.comment, n_pending)
       or (n_total > 0 and (" %s%d"):format(M.icons.comment, n_total) or "")
     if turn.pending then
@@ -266,7 +310,7 @@ function M.sidebar(ctx)
         local mark = viewed and M.icons.viewed or "  "
         local cbadge = n > 0 and ("%s%d"):format(M.icons.comment, n) or ""
         local right = (cbadge ~= "" and (cbadge .. " ") or "") .. stat
-        local left = "  " .. mark .. icon
+        local left = indent .. "  " .. mark .. icon
         local avail2 = W - vim.fn.strdisplaywidth(left) - vim.fn.strdisplaywidth(right) - 1
         -- keep the file name readable: cut from the left, not the right
         local name = key == Store.RESPONSE and trunc(label, math.max(avail2, 4))
@@ -325,9 +369,12 @@ function M.sidebar(ctx)
         child(d.path, d.created and M.icons.new or M.icons.file, d.rel, stat, "SidekickReviewStat")
       end
       if #(ctx.diffs[turn.id] or {}) == 0 then
-        add("    no files changed", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank", turn = turn.id })
+        add(indent .. "    no files changed", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank", turn = turn.id })
       end
     end
+  end
+
+    ::continue::
   end
 
   return lines
@@ -890,12 +937,13 @@ end
 ---@param ctx sidekick.review.Ctx
 ---@return sidekick.review.Line[]
 function M.main(ctx)
-  local turns = ctx.transcript and ctx.transcript.turns or {}
   local turn ---@type sidekick.review.Turn?
-  for _, t in ipairs(turns) do
-    if t.id == ctx.sel_turn then
-      turn = t
-      break
+  for _, tr in ipairs(ctx.transcripts or {}) do
+    for _, t in ipairs(tr.turns) do
+      if t.id == ctx.sel_turn then
+        turn = t
+        break
+      end
     end
   end
   if not turn then

@@ -193,6 +193,9 @@ function M.stub_cli()
   package.loaded["sidekick.cli"] = setmetatable({
     send = function(opts)
       sent[#sent + 1] = opts
+      if opts.on_send then
+        opts.on_send(true)
+      end
     end,
   }, {
     __index = function()

@@ -35,6 +35,7 @@ local M = {}
 
 ---@class sidekick.cli.Send: sidekick.cli.Show,sidekick.cli.Message
 ---@field submit? boolean
+---@field on_send? fun(ok:boolean, err?:any) called after input is queued, or when sending fails
 
 --- Keymap options similar to `vim.keymap.set` and `lazy.nvim` mappings
 ---@class sidekick.cli.Keymap: vim.keymap.set.Opts
@@ -192,9 +193,17 @@ function M.send(opts)
     Util.exit_visual_mode()
     vim.schedule(function()
       msg = state.tool:format(text)
-      state.session:send(msg .. "\n")
-      if opts.submit then
-        state.session:submit()
+      local ok, err = pcall(function()
+        state.session:send(msg .. "\n")
+        if opts.submit then
+          state.session:submit()
+        end
+      end)
+      if opts.on_send then
+        opts.on_send(ok, err)
+      end
+      if not ok then
+        Util.error("Failed to send message: " .. tostring(err))
       end
     end)
   end, {

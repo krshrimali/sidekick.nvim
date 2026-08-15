@@ -297,6 +297,17 @@ describe("review.ui", function()
     assert.are.same(0, Review.pending(fx.cwd))
   end)
 
+  it("keeps comments pending when the CLI send fails", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    local store = Store.get(fx.cwd)
+    store:add({ turn = ui.sel_turn, target = "response", anchor_key = "b2:1", anchor = {}, body = "retry me" })
+    package.loaded["sidekick.cli"].send = function(opts)
+      opts.on_send(false, "not attached")
+    end
+    Submit.send({ cwd = fx.cwd, turn = ui.transcript.turns[2] })
+    assert.are.same("pending", store:find("c1").status)
+  end)
+
   it("threads Claude's tagged replies back under the comments", function()
     local ui = Review.open({ cwd = fx.cwd })
     local store = Store.get(fx.cwd)

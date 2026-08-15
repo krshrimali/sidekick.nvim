@@ -135,11 +135,15 @@ function M.send(opts)
     submit = opts.submit ~= false,
     name = opts.name,
     focus = false,
+    on_send = function(ok)
+      if not ok then
+        return
+      end
+      for _, c in ipairs(comments) do
+        store:set_status(c.id, "sent")
+      end
+    end,
   })
-
-  for _, c in ipairs(comments) do
-    store:set_status(c.id, "sent")
-  end
   return true, msg
 end
 

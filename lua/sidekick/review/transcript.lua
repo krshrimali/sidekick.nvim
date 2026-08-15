@@ -56,18 +56,75 @@ local function decode(line)
   return nil
 end
 
---- Decode just the first entry. Used to identify a transcript cheaply.
+--- Read just the first line, growing the read only while it has to.
+---
+--- Identifying a transcript needs one line, but a session header can carry an
+--- instruction blob, so the line is not always small. Reading a fixed large
+--- chunk means scanning megabytes across a directory of past sessions to
+--- learn which project each belongs to.
 ---@param path string
----@return sidekick.review.Entry?
-function M.first_entry(path)
-  -- session headers are small, but Codex's `session_meta` carries an
-  -- instruction blob, so read generously before giving up
-  local data = M.read(path, 262144)
-  if not data then
+---@return string?
+function M.first_line(path)
+  local fd = vim.uv.fs_open(path, "r", 438)
+  if not fd then
     return nil
   end
-  local line = data:match("^([^\n]*)")
-  return line and line ~= "" and decode(line) or nil
+  local size = (vim.uv.fs_fstat(fd) or {}).size or 0
+  local out, offset, chunk = "", 0, 8192
+
+  while offset < size do
+    local data = vim.uv.fs_read(fd, math.min(chunk, size - offset), offset)
+    if not data or data == "" then
+      break
+    end
+    local nl = data:find("\n", 1, true)
+    if nl then
+      out = out .. data:sub(1, nl - 1)
+      break
+    end
+    out = out .. data
+    offset = offset + #data
+    -- a header this long is pathological; stop rather than read the whole file
+    if #out > 1048576 then
+      break
+    end
+    chunk = chunk * 2
+  end
+
+  vim.uv.fs_close(fd)
+  return out ~= "" and out or nil
+end
+
+--- Identity of a transcript, keyed by file and validated by size and mtime.
+---
+--- Which project a session belongs to never changes, so scanning a directory
+--- of past sessions should cost one read per file, once — not on every refresh.
+---@type table<string, {size:number, mtime:number, entry?:sidekick.review.Entry}>
+local first_entries = {}
+
+--- Forget cached transcript identities. Used by tests.
+function M.clear_cache()
+  first_entries = {}
+end
+
+--- Decode just the first entry. Used to identify a transcript cheaply.
+---@param path string
+---@param stat? uv.fs_stat.result
+---@return sidekick.review.Entry?
+function M.first_entry(path, stat)
+  stat = stat or vim.uv.fs_stat(path)
+  local size = stat and stat.size or 0
+  local mtime = stat and (stat.mtime.sec + stat.mtime.nsec / 1e9) or 0
+
+  local hit = first_entries[path]
+  if hit and hit.size == size and hit.mtime == mtime then
+    return hit.entry
+  end
+
+  local line = M.first_line(path)
+  local entry = line and decode(line) or nil
+  first_entries[path] = { size = size, mtime = mtime, entry = entry }
+  return entry
 end
 
 --- Parse a transcript file into entries.

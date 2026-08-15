@@ -311,6 +311,60 @@ describe("review.diff", function()
   end)
 end)
 
+describe("review.transcript caching", function()
+  local fx ---@type sidekick.test.ReviewFixture
+
+  before_each(function()
+    fx = Fixture.setup()
+  end)
+  after_each(function()
+    fx.cleanup()
+  end)
+
+  it("reuses a built transcript until the file moves on", function()
+    local src = Transcript.sources(fx.cwd)[1]
+    local first = Model.build(src)
+    assert.are.equal(first, Model.build(src))
+
+    -- a transcript is append-only, so either field moving means new content
+    assert.are_not.equal(first, Model.build(vim.tbl_extend("force", {}, src, { mtime = src.mtime + 1 })))
+    assert.are_not.equal(first, Model.build(vim.tbl_extend("force", {}, src, { size = src.size + 1 })))
+  end)
+
+  it("picks up an appended turn", function()
+    local before = #Model.load(fx.cwd).turns
+    Fixture.append(fx, {
+      { type = "user", uuid = "z1", timestamp = "2026-08-15T12:00:00.000Z", message = { role = "user", content = "one more" } },
+    })
+    assert.are.same(before + 1, #Model.load(fx.cwd).turns)
+  end)
+
+  it("reads only the first line to identify a transcript", function()
+    -- a session header can be long, but the rest of the file must not be read
+    local path = fx.root .. "/big.jsonl"
+    local header = vim.json.encode({ type = "session_meta", payload = { id = "s", cwd = fx.cwd } })
+    Fixture.write(path, header .. "\n" .. string.rep('{"type":"noise"}\n', 20000))
+
+    local entry = Transcript.first_entry(path)
+    assert.is_not_nil(entry)
+    assert.are.same("session_meta", entry.type)
+    assert.are.same(header, Transcript.first_line(path))
+  end)
+
+  it("handles a file with no newline at all", function()
+    local path = fx.root .. "/oneline.jsonl"
+    Fixture.write(path, vim.json.encode({ type = "session_meta", payload = { cwd = fx.cwd } }))
+    assert.are.same("session_meta", Transcript.first_entry(path).type)
+  end)
+
+  it("caches an unidentifiable file too, rather than re-reading it", function()
+    local path = fx.root .. "/junk.jsonl"
+    Fixture.write(path, "not json\n")
+    assert.is_nil(Transcript.first_entry(path))
+    assert.is_nil(Transcript.first_entry(path))
+  end)
+end)
+
 describe("review.diff caching", function()
   local fx ---@type sidekick.test.ReviewFixture
 

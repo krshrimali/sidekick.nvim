@@ -92,7 +92,7 @@ local function collect(dir, cwd, out, check_cwd)
       if stat and stat.size > 0 then
         local ok = true
         if check_cwd then
-          local entry = Transcript.first_entry(file)
+          local entry = Transcript.first_entry(file, stat)
           ok = entry ~= nil and entry.cwd ~= nil and vim.fs.normalize(entry.cwd) == cwd
         end
         if ok then

@@ -156,6 +156,9 @@ function M.setup()
   Claude.root = projects
   Store.root = root .. "/state"
   Store.reset()
+  -- transcripts are cached by path; a fixture reuses paths across runs
+  Transcript.clear_cache()
+  require("sidekick.review.model").clear_cache()
 
   return {
     root = root,
@@ -166,6 +169,8 @@ function M.setup()
     cleanup = function()
       Claude.root, Store.root = prev_root, prev_state
       Store.reset()
+      Transcript.clear_cache()
+      require("sidekick.review.model").clear_cache()
       vim.fn.delete(root, "rf")
     end,
   }

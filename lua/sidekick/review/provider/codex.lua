@@ -111,7 +111,7 @@ function M.sources(cwd)
     if stat and stat.size > 0 then
       -- rollouts are not namespaced by project, so the cwd has to be read out
       -- of the session_meta on the first line
-      local entry = Transcript.first_entry(file)
+      local entry = Transcript.first_entry(file, stat)
       local meta = entry and entry.payload or nil
       local scwd = type(meta) == "table" and meta.cwd or nil
       if type(scwd) == "string" and vim.fs.normalize(scwd) == cwd then

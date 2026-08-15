@@ -70,10 +70,30 @@ M.EDIT_TOOLS = Provider.EDIT_TOOLS
 ---@deprecated use `require("sidekick.review.provider").clean_prompt`
 M.clean_prompt = Provider.clean_prompt
 
+--- Transcripts already built, keyed by file, with the size and mtime they were
+--- built from.
+---@type table<string, {size:number, mtime:number, transcript:sidekick.review.Transcript}>
+local cache = {}
+
+--- Forget every built transcript. Used by tests.
+function M.clear_cache()
+  cache = {}
+end
+
 --- Build the turn list for a transcript source.
+---
+--- A project usually has several sessions and only one of them is being
+--- written to; re-parsing the rest on every refresh is pure waste, and these
+--- files reach megabytes. Transcripts are append-only, so size and mtime are
+--- enough to know a file has not moved on.
 ---@param src sidekick.review.Source
 ---@return sidekick.review.Transcript
 function M.build(src)
+  local hit = cache[src.file]
+  if hit and hit.size == src.size and hit.mtime == src.mtime then
+    return hit.transcript
+  end
+
   local provider = Provider.get(src.provider or "claude")
   local turns = provider and provider.build(src) or {}
 
@@ -81,14 +101,17 @@ function M.build(src)
     turns[#turns].pending = true
   end
 
-  return {
+  local transcript = {
     session = src.session,
     file = src.file,
     cwd = src.cwd,
     provider = src.provider,
     turns = turns,
     mtime = src.mtime,
-  }
+  } ---@type sidekick.review.Transcript
+
+  cache[src.file] = { size = src.size, mtime = src.mtime, transcript = transcript }
+  return transcript
 end
 
 --- Load a transcript for `cwd`.

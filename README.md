@@ -919,6 +919,20 @@ shown without line numbers rather than inventing them.
 > report that it found none. Adding one is a matter of dropping a module into
 > `lua/sidekick/review/provider/`.
 
+**If no sessions are found**, run `:checkhealth sidekick`. It reports each CLI's
+storage separately, so you can tell "the CLI has never run here" from "there are
+sessions, just none for this directory":
+
+```text
+Sidekick Review ~
+- ✅ OK `Claude Code`: storage found at `~/.claude/projects`, but no session for this directory
+- ✅ OK `Codex CLI`: storage found at `~/.codex/sessions`, but no session for this directory
+- ⚠️ WARNING No sessions for `/tmp/scratch`.
+  Run `claude` or `codex` from this directory, then `:Sidekick review`.
+  Sessions are matched on the cwd recorded inside the transcript, so starting
+  the CLI from a subdirectory or a symlinked path will not match.
+```
+
 ### The overlay
 
 ```text

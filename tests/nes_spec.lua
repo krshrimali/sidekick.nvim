@@ -26,6 +26,49 @@ describe("nes enabled option", function()
     Nes._edits = {}
   end)
 
+  it("does not move a window after it switches to another buffer", function()
+    local other = vim.api.nvim_create_buf(false, true)
+    Nes._jump({ 0, 3 }, buf)
+    vim.api.nvim_set_current_buf(other)
+    vim.wait(20)
+    assert.are.same({ 1, 0 }, vim.api.nvim_win_get_cursor(0))
+    vim.api.nvim_buf_delete(other, { force = true })
+  end)
+
+  it("does not apply an edit after the buffer version changes", function()
+    local version = vim.lsp.util.buf_versions[buf] or 0
+    vim.lsp.util.buf_versions[buf] = version
+    local applied = false
+    local original_client = Config.get_client
+    local original_apply = vim.lsp.util.apply_text_edits
+    Config.get_client = function()
+      return { id = 1, offset_encoding = "utf-16" }
+    end
+    vim.lsp.util.apply_text_edits = function()
+      applied = true
+    end
+    Nes.enabled = true
+    Nes._edits = {
+      {
+        buf = buf,
+        from = { 0, 0 },
+        to = { 0, 0 },
+        text = "changed",
+        range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 0 } },
+        textDocument = { uri = "", version = version },
+        is_empty = function()
+          return false
+        end,
+      },
+    }
+    assert.is_true(Nes.apply())
+    vim.lsp.util.buf_versions[buf] = version + 1
+    vim.wait(20)
+    Config.get_client = original_client
+    vim.lsp.util.apply_text_edits = original_apply
+    assert.is_false(applied)
+  end)
+
   it("is enabled by default", function()
     assert.is_true(Config.nes.enabled(buf))
   end)

@@ -248,9 +248,11 @@ function M.jump()
 end
 
 ---@param pos sidekick.Pos
-function M._jump(pos)
+---@param buf? integer
+function M._jump(pos, buf)
+  buf = buf or vim.api.nvim_get_current_buf()
   pos = vim.deepcopy(pos)
-  pos = Util.fix_pos(0, pos)
+  pos = Util.fix_pos(buf, pos)
 
   local win = vim.api.nvim_get_current_win()
 
@@ -263,14 +265,16 @@ function M._jump(pos)
 
   -- schedule jump
   vim.schedule(function()
-    if not vim.api.nvim_win_is_valid(win) then
+    if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= buf then
       return
     end
-    -- add to jump list
-    if Config.nes.jumplist then
-      vim.cmd("normal! m'")
-    end
-    vim.api.nvim_win_set_cursor(win, pos)
+    vim.api.nvim_win_call(win, function()
+      -- add to jump list in the window that owns the edit
+      if Config.nes.jumplist then
+        vim.cmd("normal! m'")
+      end
+      vim.api.nvim_win_set_cursor(win, pos)
+    end)
   end)
   return true
 end
@@ -304,7 +308,14 @@ function M.apply()
       newText = edit.text,
     }
   end, edits) --[[@as lsp.TextEdit[] ]]
+  local version = edits[1].textDocument.version
   vim.schedule(function()
+    if
+      not (vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_is_loaded(buf))
+      or vim.lsp.util.buf_versions[buf] ~= version
+    then
+      return
+    end
     local last = edits[#edits]
     local diff = last:diff()
 
@@ -329,7 +340,7 @@ function M.apply()
       pos[1] = pos[1] + (#diff.to.lines - 1)
       pos[2] = pos[2] + #diff.to.text
     end
-    M._jump(pos)
+    M._jump(pos, buf)
   end)
   M.clear()
   return true

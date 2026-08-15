@@ -1,0 +1,1007 @@
+---@brief The review overlay: sidebar + main pane + footer, and all interaction.
+---
+--- Floating windows are used on purpose. `cli.tab_scoped` binds a CLI session to
+--- a tabpage, so opening the review in a new tab would talk to the wrong Claude.
+--- Floats keep us in the current tab and leave the user's window layout intact.
+local Config = require("sidekick.config")
+local Diff = require("sidekick.review.diff")
+local Model = require("sidekick.review.model")
+local Render = require("sidekick.review.render")
+local Store = require("sidekick.review.store")
+local Submit = require("sidekick.review.submit")
+local Util = require("sidekick.util")
+
+local M = {}
+
+local ns = vim.api.nvim_create_namespace("sidekick.review")
+
+--- Comment bodies always go through here: a body that is only whitespace is
+--- treated as "changed my mind", never stored.
+---@param body? string
+---@return string?
+local function clean(body)
+  if type(body) ~= "string" then
+    return nil
+  end
+  body = body:gsub("^%s+", ""):gsub("%s+$", "")
+  return body ~= "" and body or nil
+end
+
+---@class sidekick.review.Pane
+---@field buf integer
+---@field win integer
+---@field lines sidekick.review.Line[]
+
+---@class sidekick.review.UI
+---@field cwd string
+---@field session? string
+---@field transcript? sidekick.review.Transcript
+---@field store sidekick.review.Store
+---@field expanded table<string, boolean>
+---@field show_thinking boolean
+---@field sel_turn? string
+---@field sel_key? string
+---@field diffs table<string, sidekick.review.FileDiff[]>
+---@field sidebar sidekick.review.Pane
+---@field main sidekick.review.Pane
+---@field footer sidekick.review.Pane
+---@field watcher? uv.uv_fs_event_t
+---@field closed boolean
+---@field focus "sidebar"|"main"
+local UI = {}
+UI.__index = UI
+
+---@type sidekick.review.UI?
+M.current = nil
+
+--------------------------------------------------------------------------------
+-- geometry
+--------------------------------------------------------------------------------
+
+--- Layout of the overlay.
+---
+--- `height` counts every row the overlay owns, borders and footer included.
+--- For a bordered float `row`/`col` address the *border*, so the content sits
+--- one row/column inside:
+---
+--- ```
+---   row              ╭─ turns ─╮╭─ review ─╮   <- top border (row)
+---   row + 1          │         ││          │   <- pane content (pane_height)
+---   …
+---   row + h - 2      ╰─────────╯╰──────────╯   <- bottom border
+---   row + h - 1       3 pending · S submit …   <- footer
+--- ```
+---@class sidekick.review.Geometry
+---@field row integer
+---@field col integer
+---@field width integer total columns
+---@field height integer total rows
+---@field pane_row integer top border row of the panes
+---@field pane_height integer content rows of the panes
+---@field footer_row integer
+---@field sidebar integer sidebar content width
+---@field main integer main pane content width
+---@field main_col integer
+
+---@return sidekick.review.Geometry
+local function geometry()
+  local cfg = Config.review or {}
+  local total_w = vim.o.columns
+  local total_h = math.max(vim.o.lines - vim.o.cmdheight, 6)
+  local width = math.floor(total_w * (cfg.width or 0.94))
+  local height = math.floor(total_h * (cfg.height or 0.9))
+  width = math.max(math.min(width, total_w - 2), 40)
+  height = math.max(math.min(height, total_h), 8)
+
+  -- the diff pane is where the work happens, so the sidebar yields to it first
+  local sidebar = cfg.sidebar_width or 38
+  sidebar = math.max(math.min(sidebar, math.floor(width * 0.35)), 20)
+  -- two borders sit between the panes, so the main pane gets what is left
+  local main = math.max(width - sidebar - 4, 10)
+
+  local row = math.max(math.floor((total_h - height) / 2), 0)
+  local col = math.max(math.floor((total_w - width) / 2), 0)
+  return {
+    row = row,
+    col = col,
+    width = width,
+    height = height,
+    pane_row = row,
+    pane_height = math.max(height - 3, 3),
+    footer_row = row + height - 1,
+    sidebar = sidebar,
+    main = main,
+    main_col = col + sidebar + 2,
+  }
+end
+
+--- Window configs for the three panes, so open and resize can never drift.
+---@param geo sidekick.review.Geometry
+---@return table<string, vim.api.keyset.win_config>
+local function win_configs(geo)
+  return {
+    sidebar = {
+      relative = "editor",
+      row = geo.pane_row,
+      col = geo.col,
+      width = geo.sidebar,
+      height = geo.pane_height,
+    },
+    main = {
+      relative = "editor",
+      row = geo.pane_row,
+      col = geo.main_col,
+      width = geo.main,
+      height = geo.pane_height,
+    },
+    footer = {
+      relative = "editor",
+      row = geo.footer_row,
+      col = geo.col + 1,
+      width = math.max(geo.width - 2, 10),
+      height = 1,
+    },
+  }
+end
+
+--------------------------------------------------------------------------------
+-- buffers & windows
+--------------------------------------------------------------------------------
+
+---@param name string
+---@return integer
+local function make_buf(name)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].filetype = "sidekick_review"
+  pcall(vim.api.nvim_buf_set_name, buf, "sidekick://review/" .. name)
+  return buf
+end
+
+---@param pane sidekick.review.Pane
+---@param lines sidekick.review.Line[]
+local function paint(pane, lines)
+  if not vim.api.nvim_buf_is_valid(pane.buf) then
+    return
+  end
+  pane.lines = lines
+  local text = vim.tbl_map(function(l)
+    return (l.text:gsub("\n", " "))
+  end, lines) --[[@as string[] ]]
+  vim.bo[pane.buf].modifiable = true
+  vim.api.nvim_buf_set_lines(pane.buf, 0, -1, false, text)
+  vim.bo[pane.buf].modifiable = false
+  vim.api.nvim_buf_clear_namespace(pane.buf, ns, 0, -1)
+  for i, l in ipairs(lines) do
+    for _, hl in ipairs(l.hl or {}) do
+      local ok = pcall(vim.api.nvim_buf_set_extmark, pane.buf, ns, i - 1, hl[1], {
+        end_col = hl[2] == -1 and #text[i] or math.min(hl[2], #text[i]),
+        hl_group = hl[3],
+        strict = false,
+      })
+      if not ok then
+        break
+      end
+    end
+  end
+end
+
+--------------------------------------------------------------------------------
+-- data
+--------------------------------------------------------------------------------
+
+function UI:reload()
+  local prev_turn, prev_key = self.sel_turn, self.sel_key
+  Diff.ctxlen = (Config.review or {}).context or Diff.ctxlen
+  self.transcript = Model.load(self.cwd, self.session)
+  self.diffs = {}
+  if not self.transcript then
+    return
+  end
+  self.session = self.transcript.session
+  for _, turn in ipairs(self.transcript.turns) do
+    self.diffs[turn.id] = Diff.turn(self.transcript.turns, turn)
+  end
+
+  -- keep the selection if it still exists, else fall back to the newest turn
+  local exists = false
+  for _, t in ipairs(self.transcript.turns) do
+    if t.id == prev_turn then
+      exists = true
+      break
+    end
+  end
+  if not exists then
+    local last = self.transcript.turns[#self.transcript.turns]
+    self.sel_turn = last and last.id or nil
+    self.sel_key = Store.RESPONSE
+    if self.sel_turn then
+      self.expanded[self.sel_turn] = true
+    end
+  else
+    self.sel_turn, self.sel_key = prev_turn, prev_key or Store.RESPONSE
+  end
+
+  require("sidekick.review.thread").sync(self.cwd, self.transcript)
+end
+
+---@return sidekick.review.Ctx
+function UI:ctx(width)
+  return {
+    transcript = self.transcript,
+    store = self.store,
+    expanded = self.expanded,
+    show_thinking = self.show_thinking,
+    sel_turn = self.sel_turn,
+    sel_key = self.sel_key,
+    diffs = self.diffs,
+    width = width,
+  }
+end
+
+---@return sidekick.review.Turn?
+function UI:turn()
+  for _, t in ipairs(self.transcript and self.transcript.turns or {}) do
+    if t.id == self.sel_turn then
+      return t
+    end
+  end
+end
+
+--------------------------------------------------------------------------------
+-- rendering
+--------------------------------------------------------------------------------
+
+---@param opts? {keep_cursor?:boolean}
+function UI:render(opts)
+  opts = opts or {}
+  if self.closed then
+    return
+  end
+  local geo = geometry()
+
+  paint(self.sidebar, Render.sidebar(self:ctx(geo.sidebar)))
+  paint(self.main, Render.main(self:ctx(geo.main)))
+  paint(self.footer, { Render.footer(self:ctx(math.max(geo.width - 2, 10))) })
+
+  if not opts.keep_cursor then
+    self:sync_sidebar_cursor()
+  end
+end
+
+--- Move the sidebar cursor onto the selected item.
+function UI:sync_sidebar_cursor()
+  if not vim.api.nvim_win_is_valid(self.sidebar.win) then
+    return
+  end
+  local collapsed = not self.expanded[self.sel_turn or ""]
+  for i, l in ipairs(self.sidebar.lines) do
+    local it = l.item
+    if it and it.turn == self.sel_turn and (it.key == self.sel_key or (it.kind == "turn" and collapsed)) then
+      pcall(vim.api.nvim_win_set_cursor, self.sidebar.win, { i, 0 })
+      return
+    end
+  end
+end
+
+--------------------------------------------------------------------------------
+-- item lookup
+--------------------------------------------------------------------------------
+
+---@param pane sidekick.review.Pane
+---@return sidekick.review.Item?, integer
+local function item_at(pane)
+  if not vim.api.nvim_win_is_valid(pane.win) then
+    return nil, 0
+  end
+  local row = vim.api.nvim_win_get_cursor(pane.win)[1]
+  return pane.lines[row] and pane.lines[row].item or nil, row
+end
+
+---@return sidekick.review.Item?
+function UI:main_item()
+  return (item_at(self.main))
+end
+
+--------------------------------------------------------------------------------
+-- actions
+--------------------------------------------------------------------------------
+
+function UI:focus_pane(which)
+  self.focus = which
+  local pane = which == "sidebar" and self.sidebar or self.main
+  if vim.api.nvim_win_is_valid(pane.win) then
+    vim.api.nvim_set_current_win(pane.win)
+  end
+end
+
+--- Select the sidebar item under the cursor.
+---@param opts? {toggle?:boolean, focus_main?:boolean}
+function UI:activate(opts)
+  opts = opts or {}
+  local item = item_at(self.sidebar)
+  if not item then
+    return
+  end
+  if item.kind == "turn" then
+    if opts.toggle ~= false then
+      self.expanded[item.turn] = not self.expanded[item.turn]
+    end
+    self.sel_turn = item.turn
+    self.sel_key = Store.RESPONSE
+    self:render({ keep_cursor = true })
+  elseif item.kind == "response" or item.kind == "file" then
+    self.sel_turn = item.turn
+    self.sel_key = item.key
+    self:render({ keep_cursor = true })
+    if opts.focus_main then
+      self:focus_pane("main")
+      pcall(vim.api.nvim_win_set_cursor, self.main.win, { 1, 0 })
+    end
+  end
+end
+
+--- Move the selection to the next/previous sidebar entry and preview it.
+---@param delta integer
+function UI:cycle(delta)
+  local win = self.sidebar.win
+  if not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+  local row = vim.api.nvim_win_get_cursor(win)[1]
+  local n = #self.sidebar.lines
+  for i = row + delta, delta > 0 and n or 1, delta do
+    local it = self.sidebar.lines[i] and self.sidebar.lines[i].item
+    if it and (it.kind == "turn" or it.kind == "response" or it.kind == "file") then
+      vim.api.nvim_win_set_cursor(win, { i, 0 })
+      self:activate({ toggle = false })
+      return
+    end
+  end
+end
+
+--- Toggle the "viewed" mark of the current item.
+function UI:toggle_viewed()
+  local turn, key = self.sel_turn, self.sel_key
+  if self.focus == "sidebar" then
+    local item = item_at(self.sidebar)
+    if item and item.key then
+      turn, key = item.turn, item.key
+    end
+  end
+  if not turn or not key then
+    return
+  end
+  local now = self.store:set_viewed(turn, key)
+  self:render({ keep_cursor = true })
+  local what = key == Store.RESPONSE and "response" or vim.fn.fnamemodify(key, ":t")
+  Util.info(("%s marked as %s"):format(what, now and "viewed" or "not viewed"))
+end
+
+--- Jump to the real file at the line under the cursor.
+function UI:goto_file()
+  local item = self:main_item()
+  local turn = self:turn()
+  local path = item and item.file or (self.sel_key ~= Store.RESPONSE and self.sel_key or nil)
+  if not path then
+    if turn and #turn.files > 0 then
+      path = turn.files[1].path
+    end
+  end
+  if not path then
+    Util.warn("no file under cursor")
+    return
+  end
+  local lnum = item and (item.lnum or item.old_lnum) or nil
+  self:close()
+  vim.schedule(function()
+    vim.cmd.edit(vim.fn.fnameescape(path))
+    if lnum then
+      pcall(vim.api.nvim_win_set_cursor, 0, { lnum, 0 })
+      vim.cmd("normal! zz")
+    end
+  end)
+end
+
+--- Collect the anchor for a comment at the cursor (or visual range).
+---@param range? {from:integer, to:integer}
+---@return sidekick.review.Item?, string[]
+function UI:anchor(range)
+  local item, row = item_at(self.main)
+  if not item then
+    return nil, {}
+  end
+  local from, to = range and range.from or row, range and range.to or row
+  local anchors = {} ---@type string[]
+  local first ---@type sidekick.review.Item?
+  for i = from, to do
+    local l = self.main.lines[i]
+    if l and l.item and l.item.anchor then
+      first = first or l.item
+      anchors[#anchors + 1] = l.item.anchor
+    end
+  end
+  return first or item, anchors
+end
+
+---@param range? {from:integer, to:integer}
+function UI:comment(range)
+  local turn = self:turn()
+  if not turn then
+    Util.warn("no turn selected")
+    return
+  end
+  local item, anchors = self:anchor(range)
+  if not item or not item.anchor_key then
+    Util.warn("nothing to comment on here — put the cursor on a diff or response line")
+    return
+  end
+
+  local loc ---@type string
+  if item.file then
+    loc = ("%s:%s"):format(vim.fn.fnamemodify(item.file, ":."), tostring(item.lnum or item.old_lnum or "?"))
+  else
+    loc = "response"
+  end
+
+  require("sidekick.review.comment").open({
+    title = "Comment on " .. loc,
+    context = anchors,
+    on_submit = function(body)
+      body = clean(body)
+      if not body then
+        return
+      end
+      local end_lnum ---@type integer?
+      if range and range.to > range.from then
+        local last = self.main.lines[range.to]
+        end_lnum = last and last.item and (last.item.lnum or last.item.old_lnum) or nil
+      end
+      self.store:add({
+        turn = turn.id,
+        target = item.file and "file" or "response",
+        file = item.file,
+        rel = item.file and (vim.fs.relpath(self.cwd, item.file) or item.file) or nil,
+        lnum = item.lnum or item.old_lnum,
+        end_lnum = end_lnum,
+        side = item.side,
+        anchor_key = item.anchor_key,
+        anchor = anchors,
+        body = body,
+      })
+      self:render({ keep_cursor = true })
+      Util.info("comment added — press S to submit the review")
+    end,
+  })
+end
+
+--- Reply to the thread under the cursor (a follow-up comment on the same anchor).
+function UI:reply()
+  local item = self:main_item()
+  if not item or not item.comment then
+    Util.warn("put the cursor on a comment to reply")
+    return
+  end
+  local c = item.comment
+  require("sidekick.review.comment").open({
+    title = ("Reply to [%s]"):format(c.id),
+    context = vim.split(c.body, "\n", { plain = true }),
+    on_submit = function(body)
+      body = clean(body)
+      if not body then
+        return
+      end
+      self.store:reply(c.id, { role = "user", body = body, ts = os.time() })
+      -- a follow-up makes the thread pending again so it gets sent
+      self.store:set_status(c.id, "pending")
+      self:render({ keep_cursor = true })
+    end,
+  })
+end
+
+function UI:edit_comment()
+  local item = self:main_item()
+  if not item or not item.comment then
+    Util.warn("put the cursor on a comment to edit")
+    return
+  end
+  local c = item.comment
+  require("sidekick.review.comment").open({
+    title = ("Edit [%s]"):format(c.id),
+    body = c.body,
+    on_submit = function(body)
+      body = clean(body)
+      if body then
+        self.store:edit(c.id, body)
+        self:render({ keep_cursor = true })
+      end
+    end,
+  })
+end
+
+function UI:delete_comment()
+  local item = self:main_item()
+  if not item or not item.comment then
+    Util.warn("put the cursor on a comment to delete")
+    return
+  end
+  local c = item.comment
+  local n = #c.replies
+  local msg = n > 0 and ("Delete [%s] and its %d repl%s?"):format(c.id, n, n == 1 and "y" or "ies")
+    or ("Delete comment [%s]?"):format(c.id)
+  vim.ui.select({ "yes", "no" }, { prompt = msg }, function(choice)
+    if choice == "yes" then
+      self.store:remove(c.id)
+      self:render({ keep_cursor = true })
+    end
+  end)
+end
+
+function UI:resolve_comment()
+  local item = self:main_item()
+  if not item or not item.comment then
+    Util.warn("put the cursor on a comment to resolve")
+    return
+  end
+  local c = item.comment
+  self.store:set_status(c.id, c.status == "resolved" and "pending" or "resolved")
+  self:render({ keep_cursor = true })
+end
+
+---@param delta integer
+---@param kind "comment"|"hunk"|"file"
+function UI:jump(delta, kind)
+  local win = self.main.win
+  if not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+  local row = vim.api.nvim_win_get_cursor(win)[1]
+  local n = #self.main.lines
+  local seen_current = nil ---@type any
+  for i = row + delta, delta > 0 and n or 1, delta do
+    local it = self.main.lines[i] and self.main.lines[i].item
+    if it then
+      if kind == "comment" and it.comment and it.kind == "comment" then
+        if seen_current ~= it.comment then
+          vim.api.nvim_win_set_cursor(win, { i, 0 })
+          vim.cmd("normal! zz")
+          return
+        end
+      elseif kind == "hunk" and it.kind == "hunk" then
+        vim.api.nvim_win_set_cursor(win, { i, 0 })
+        vim.cmd("normal! zt")
+        return
+      end
+    end
+  end
+  Util.info(("no %s %s here"):format(delta > 0 and "next" or "previous", kind))
+end
+
+--- Submit the pending comments of the selected turn.
+---@param opts? {all?:boolean}
+function UI:submit(opts)
+  opts = opts or {}
+  local turn = self:turn()
+  local comments = opts.all and self.store:all("pending")
+    or (turn and self.store:for_turn(turn.id, { status = "pending" }) or {})
+  if #comments == 0 then
+    Util.warn("no pending comments to submit")
+    return
+  end
+
+  local preview = Submit.render(comments, { turn = turn })
+  require("sidekick.review.comment").open({
+    title = ("Submit %d comment%s to Claude"):format(#comments, #comments == 1 and "" or "s"),
+    body = preview or "",
+    height = 0.6,
+    submit_label = "send",
+    on_submit = function(body)
+      body = clean(body)
+      if not body then
+        Util.warn("sidekick.review: empty message, nothing sent")
+        return
+      end
+      require("sidekick.cli").send({ msg = body, submit = true, focus = false })
+      for _, c in ipairs(comments) do
+        self.store:set_status(c.id, "sent")
+      end
+      self:render({ keep_cursor = true })
+      Util.info(("sent %d comment%s to Claude"):format(#comments, #comments == 1 and "" or "s"))
+    end,
+  })
+end
+
+function UI:help()
+  local lines = {
+    "# Sidekick Review",
+    "",
+    "Every Claude turn is a pull request: a prompt, a response, and changed files.",
+    "",
+    "## Navigation",
+    "  <Tab>       switch between sidebar and diff pane",
+    "  <CR>        sidebar: expand turn / open item (and focus it)",
+    "  o           sidebar: open item without leaving the sidebar",
+    "  J / K       next / previous item (previews as you go)",
+    "  ]c / [c     next / previous comment",
+    "  ]h / [h     next / previous hunk",
+    "  gf          open the real file at this line",
+    "",
+    "## Reviewing",
+    "  c           comment on the line under the cursor (works in visual mode)",
+    "  r           reply to the thread under the cursor",
+    "  e           edit the comment under the cursor",
+    "  d           delete the comment under the cursor",
+    "  <Space>     resolve / unresolve the comment under the cursor",
+    "  x           toggle viewed for the response or file",
+    "  t           expand / collapse Claude's thinking",
+    "",
+    "## Submitting",
+    "  S           submit this turn's pending comments to Claude",
+    "  A           submit every pending comment across all turns",
+    "",
+    "Claude is asked to tag replies `[c1]`, `[c2]`… so they thread back under",
+    "the comment they answer. Press R to refresh after Claude responds.",
+    "",
+    "  R           refresh from the transcript",
+    "  q / <Esc>   close",
+  }
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].filetype = "markdown"
+  vim.bo[buf].bufhidden = "wipe"
+  local width = 74
+  local height = math.max(math.min(#lines, vim.o.lines - vim.o.cmdheight - 4), 5)
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2),
+    col = math.floor((vim.o.columns - width) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = " help ",
+    title_pos = "center",
+    zindex = 260,
+  })
+  vim.wo[win].wrap = false
+  for _, key in ipairs({ "q", "<Esc>", "g?" }) do
+    vim.keymap.set("n", key, function()
+      pcall(vim.api.nvim_win_close, win, true)
+    end, { buffer = buf, nowait = true })
+  end
+end
+
+--------------------------------------------------------------------------------
+-- keymaps
+--------------------------------------------------------------------------------
+
+---@param buf integer
+---@param which "sidebar"|"main"
+function UI:keymaps(buf, which)
+  local function map(mode, lhs, fn, desc)
+    vim.keymap.set(mode, lhs, function()
+      if not self.closed then
+        fn()
+      end
+    end, { buffer = buf, nowait = true, silent = true, desc = "Sidekick Review: " .. desc })
+  end
+
+  map("n", "q", function()
+    self:close()
+  end, "close")
+  map("n", "<Esc>", function()
+    self:close()
+  end, "close")
+  map("n", "g?", function()
+    self:help()
+  end, "help")
+  map("n", "R", function()
+    self:reload()
+    self:render()
+    Util.info("review refreshed")
+  end, "refresh")
+  map("n", "<Tab>", function()
+    self:focus_pane(which == "sidebar" and "main" or "sidebar")
+  end, "switch pane")
+  map("n", "x", function()
+    self:toggle_viewed()
+  end, "toggle viewed")
+  map("n", "t", function()
+    self.show_thinking = not self.show_thinking
+    self:render({ keep_cursor = true })
+  end, "toggle thinking")
+  map("n", "S", function()
+    self:submit()
+  end, "submit turn")
+  map("n", "A", function()
+    self:submit({ all = true })
+  end, "submit all")
+  map("n", "J", function()
+    self:cycle(1)
+  end, "next item")
+  map("n", "K", function()
+    self:cycle(-1)
+  end, "previous item")
+
+  if which == "sidebar" then
+    map("n", "<CR>", function()
+      self:activate({ focus_main = true })
+    end, "open")
+    map("n", "o", function()
+      self:activate({ toggle = false })
+    end, "preview")
+    map("n", "<2-LeftMouse>", function()
+      self:activate({ focus_main = true })
+    end, "open")
+    map("n", "l", function()
+      self:focus_pane("main")
+    end, "focus diff")
+  else
+    map("n", "h", function()
+      self:focus_pane("sidebar")
+    end, "focus sidebar")
+    map("n", "c", function()
+      self:comment()
+    end, "comment")
+    map("x", "c", function()
+      local from = vim.fn.line("v")
+      local to = vim.fn.line(".")
+      if from > to then
+        from, to = to, from
+      end
+      vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "nx", false)
+      vim.schedule(function()
+        vim.api.nvim_win_set_cursor(self.main.win, { from, 0 })
+        self:comment({ from = from, to = to })
+      end)
+    end, "comment on selection")
+    map("n", "r", function()
+      self:reply()
+    end, "reply")
+    map("n", "e", function()
+      self:edit_comment()
+    end, "edit comment")
+    map("n", "d", function()
+      self:delete_comment()
+    end, "delete comment")
+    map("n", "<Space>", function()
+      self:resolve_comment()
+    end, "resolve comment")
+    map("n", "<CR>", function()
+      local item = self:main_item()
+      if item and item.comment then
+        self:reply()
+      else
+        self:goto_file()
+      end
+    end, "reply or open file")
+    map("n", "gf", function()
+      self:goto_file()
+    end, "open file")
+    map("n", "]c", function()
+      self:jump(1, "comment")
+    end, "next comment")
+    map("n", "[c", function()
+      self:jump(-1, "comment")
+    end, "previous comment")
+    map("n", "]h", function()
+      self:jump(1, "hunk")
+    end, "next hunk")
+    map("n", "[h", function()
+      self:jump(-1, "hunk")
+    end, "previous hunk")
+  end
+end
+
+--------------------------------------------------------------------------------
+-- lifecycle
+--------------------------------------------------------------------------------
+
+--- Watch the transcript so Claude's replies show up without pressing R.
+function UI:watch()
+  if not self.transcript then
+    return
+  end
+  local file = self.transcript.file
+  local handle = vim.uv.new_fs_event()
+  if not handle then
+    return
+  end
+  local refresh = Util.debounce(function()
+    if self.closed then
+      return
+    end
+    self:reload()
+    self:render({ keep_cursor = true })
+  end, 400)
+  local ok = pcall(handle.start, handle, file, {}, function()
+    vim.schedule(refresh)
+  end)
+  if ok then
+    self.watcher = handle
+  else
+    pcall(handle.close, handle)
+  end
+end
+
+function UI:close()
+  if self.closed then
+    return
+  end
+  self.closed = true
+  if self.watcher then
+    pcall(self.watcher.stop, self.watcher)
+    pcall(self.watcher.close, self.watcher)
+    self.watcher = nil
+  end
+  for _, pane in ipairs({ self.sidebar, self.main, self.footer }) do
+    if pane and vim.api.nvim_win_is_valid(pane.win) then
+      pcall(vim.api.nvim_win_close, pane.win, true)
+    end
+  end
+  if M.current == self then
+    M.current = nil
+  end
+end
+
+---@param opts? {cwd?:string, session?:string, turn?:string}
+---@return sidekick.review.UI?
+function M.open(opts)
+  opts = opts or {}
+  if M.current and not M.current.closed then
+    M.current:focus_pane(M.current.focus)
+    return M.current
+  end
+
+  local cwd = vim.fs.normalize(opts.cwd or vim.uv.cwd() or ".")
+  local self = setmetatable({
+    cwd = cwd,
+    session = opts.session,
+    store = Store.get(cwd),
+    expanded = {},
+    show_thinking = false,
+    diffs = {},
+    closed = false,
+    focus = "sidebar",
+  }, UI) --[[@as sidekick.review.UI]]
+
+  self:reload()
+  if not self.transcript then
+    Util.warn(
+      "sidekick.review: no Claude Code transcript found for "
+        .. cwd
+        .. "\nStart a Claude session in this directory first."
+    )
+    return nil
+  end
+  if #self.transcript.turns == 0 then
+    Util.warn("sidekick.review: the transcript has no turns yet")
+    return nil
+  end
+  if opts.turn then
+    self.sel_turn = opts.turn
+  end
+  if self.sel_turn then
+    self.expanded[self.sel_turn] = true
+  end
+
+  local geo = geometry()
+  local cfgs = win_configs(geo)
+
+  local function open_win(buf, cfg)
+    local win = vim.api.nvim_open_win(buf, false, cfg)
+    vim.wo[win].wrap = false
+    vim.wo[win].number = false
+    vim.wo[win].relativenumber = false
+    vim.wo[win].signcolumn = "no"
+    vim.wo[win].cursorline = true
+    vim.wo[win].winhighlight =
+      "Normal:SidekickReviewNormal,CursorLine:SidekickReviewCursorLine,FloatBorder:SidekickReviewBorder"
+    return win
+  end
+
+  self.sidebar = { buf = make_buf("sidebar"), win = 0, lines = {} }
+  self.main = { buf = make_buf("main"), win = 0, lines = {} }
+  self.footer = { buf = make_buf("footer"), win = 0, lines = {} }
+
+  self.sidebar.win = open_win(
+    self.sidebar.buf,
+    vim.tbl_extend("force", cfgs.sidebar, {
+      style = "minimal",
+      border = "rounded",
+      title = " turns ",
+      title_pos = "center",
+      zindex = 200,
+    })
+  )
+  self.main.win = open_win(
+    self.main.buf,
+    vim.tbl_extend("force", cfgs.main, {
+      style = "minimal",
+      border = "rounded",
+      title = " review ",
+      title_pos = "center",
+      zindex = 200,
+    })
+  )
+  self.footer.win = open_win(
+    self.footer.buf,
+    vim.tbl_extend("force", cfgs.footer, { style = "minimal", border = "none", zindex = 201 })
+  )
+  vim.wo[self.footer.win].cursorline = false
+
+  self:keymaps(self.sidebar.buf, "sidebar")
+  self:keymaps(self.main.buf, "main")
+
+  -- closing any pane tears the whole overlay down
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = Config.augroup,
+    pattern = tostring(self.sidebar.win) .. "," .. tostring(self.main.win),
+    callback = function()
+      self:close()
+    end,
+  })
+  vim.api.nvim_create_autocmd("VimResized", {
+    group = Config.augroup,
+    callback = function()
+      if self.closed then
+        return true
+      end
+      M.resize(self)
+    end,
+  })
+  vim.api.nvim_create_autocmd("WinEnter", {
+    group = Config.augroup,
+    callback = function()
+      if self.closed then
+        return true
+      end
+      local win = vim.api.nvim_get_current_win()
+      if win == self.sidebar.win then
+        self.focus = "sidebar"
+      elseif win == self.main.win then
+        self.focus = "main"
+      end
+    end,
+  })
+
+  M.current = self
+  self:render()
+  self:watch()
+  self:focus_pane("sidebar")
+  return self
+end
+
+---@param self sidekick.review.UI
+function M.resize(self)
+  local cfgs = win_configs(geometry())
+  for _, name in ipairs({ "sidebar", "main", "footer" }) do
+    local pane = self[name]
+    if pane and vim.api.nvim_win_is_valid(pane.win) then
+      pcall(vim.api.nvim_win_set_config, pane.win, cfgs[name])
+    end
+  end
+  self:render({ keep_cursor = true })
+end
+
+function M.close()
+  if M.current then
+    M.current:close()
+  end
+end
+
+function M.toggle(opts)
+  if M.current and not M.current.closed then
+    M.close()
+    return nil
+  end
+  return M.open(opts)
+end
+
+M.UI = UI
+
+return M

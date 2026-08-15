@@ -146,6 +146,20 @@ local defaults = {
     ---@alias sidekick.picker "snacks"|"telescope"|"fzf-lua"
     picker = "snacks", ---@type sidekick.picker
   },
+  --- Review Claude's responses like pull requests.
+  --- Each turn (prompt + response + changed files) can be read, commented on
+  --- line by line, and sent back to the CLI. See `:Sidekick review`.
+  ---@class sidekick.review.Config
+  review = {
+    enabled = true,
+    width = 0.94, -- fraction of the screen used by the overlay
+    height = 0.9,
+    sidebar_width = 38, -- columns for the turn/file tree
+    -- number of context lines shown around each change
+    context = 3,
+    -- automatically refresh while the overlay is open and Claude is writing
+    watch = true,
+  },
   copilot = {
     -- track copilot's status with `didChangeStatus`
     status = {
@@ -298,6 +312,37 @@ function M.set_hl()
     LocNum = "@attribute",
     LocRow = "SidekickLocDelim",
     LocCol = "SidekickLocDelim",
+    -- review overlay
+    ReviewNormal = "NormalFloat",
+    ReviewBorder = "FloatBorder",
+    ReviewCursorLine = "CursorLine",
+    ReviewTitle = "Title",
+    ReviewText = "Normal",
+    ReviewDim = "Comment",
+    ReviewSep = "WinSeparator",
+    ReviewTurn = "Special",
+    ReviewTurnSel = "Title",
+    ReviewSelected = "Title",
+    ReviewViewed = "Comment",
+    ReviewStat = "Number",
+    ReviewPending = "DiagnosticWarn",
+    ReviewSent = "DiagnosticInfo",
+    ReviewResolved = "DiagnosticOk",
+    ReviewComment = "Normal",
+    ReviewCommentBorder = "Delimiter",
+    ReviewReply = "Normal",
+    ReviewReplyHead = "DiagnosticInfo",
+    ReviewPrompt = "Comment",
+    ReviewQuote = "Comment",
+    ReviewThinking = "Comment",
+    ReviewTool = "Function",
+    ReviewToolError = "DiagnosticError",
+    ReviewHunk = "Folded",
+    ReviewLineNr = "LineNr",
+    ReviewDiffAdd = "DiffAdd",
+    ReviewDiffDelete = "DiffDelete",
+    ReviewDiffContext = "Normal",
+    ReviewWarn = "DiagnosticWarn",
   }
   for from, to in pairs(links) do
     vim.api.nvim_set_hl(0, "Sidekick" .. from, { link = to, default = true })

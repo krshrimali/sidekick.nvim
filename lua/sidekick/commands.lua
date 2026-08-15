@@ -57,6 +57,23 @@ M.commands = {
       require("sidekick.cli").prompt()
     end,
   },
+  review = {
+    open = function(opts)
+      require("sidekick.review").open(opts)
+    end,
+    toggle = function(opts)
+      require("sidekick.review").toggle(opts)
+    end,
+    close = function()
+      require("sidekick.review").close()
+    end,
+    submit = function(opts)
+      require("sidekick.review").submit(opts)
+    end,
+    clear = function(opts)
+      require("sidekick.review").clear(opts)
+    end,
+  },
   debug = {
     nes = {
       add = function()

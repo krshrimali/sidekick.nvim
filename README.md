@@ -15,6 +15,7 @@ This fork adds the following features on top of [upstream](https://github.com/fo
 |---|---|---|
 | **Go-to-file from terminal** | Jump to file paths (with line numbers and ranges) printed in the CLI terminal output. Parses formats like `path/file.rs:42:5`, `path/file.rs:10:20` (line range), and bare paths. Strips ANSI codes and resolves relative paths against the session's cwd. | `gf` (edit), `gh` (horizontal split), `gv` (vertical split) in normal mode inside the terminal |
 | **Tab-scoped CLI sessions** | Each Neovim tab gets its own independent CLI session. Toggling, showing, or sending context in one tab won't affect another tab's session. | `cli.tab_scoped = true` (default: `false`) |
+| **Review Claude's turns like pull requests** | Read each Claude response as a PR: the prompt as the title, the prose as the description, and every file it touched as a reviewable diff. Leave inline comments, submit them as one message, and read Claude's answers threaded under each comment. | `:Sidekick review`, see [🔍 Review](#-review-claudes-responses-like-pull-requests) |
 
 ## ✨ Features
 
@@ -32,6 +33,12 @@ This fork adds the following features on top of [upstream](https://github.com/fo
   - 🔄 **Session Persistence**: Keep your CLI sessions alive with `tmux` and `zellij` integration.
   - 📂 **Automatic File Watching**: Automatically reloads files in Neovim when they are modified by AI tools.
   - 🗂️ **Tab-Scoped Sessions**: Each Neovim tab can have its own independent CLI session with `tab_scoped = true`.
+
+- **🔍 Review Claude's Responses Like Pull Requests**
+  - 🧾 **Every Turn is a PR**: Read the prompt as a title, the response as a description, and every changed file as a diff.
+  - 💬 **Inline Comments**: Comment on any response or diff line, then submit them all as one message.
+  - 🧵 **Threaded Replies**: Claude's answers are threaded back under the comment they answer.
+  - 🔁 **Exact Diffs**: Reconstructed from the recorded tool calls, so each turn shows its own change.
 
 - **🔌 Extensible and Customizable**
   - ⚙️ **Flexible Configuration**: Fine-tune every aspect of the plugin to your liking.
@@ -319,6 +326,9 @@ local defaults = {
         nav_down      = { "<c-j>", "nav_down"  , expr = true, desc = "navigate to the below window" },
         nav_up        = { "<c-k>", "nav_up"    , expr = true, desc = "navigate to the above window" },
         nav_right     = { "<c-l>", "nav_right" , expr = true, desc = "navigate to the right window" },
+        goto_file     = { "gf"   , "goto_file"        , mode = "n" , desc = "go to file under cursor" },
+        goto_file_h   = { "gh"   , "goto_file_hsplit" , mode = "n" , desc = "go to file in horizontal split" },
+        goto_file_v   = { "gv"   , "goto_file_vsplit" , mode = "n" , desc = "go to file in vertical split" },
       },
       ---@type fun(dir:"h"|"j"|"k"|"l")?
       --- Function that handles navigation between windows.
@@ -384,6 +394,20 @@ local defaults = {
     -- preferred picker for selecting files
     ---@alias sidekick.picker "snacks"|"telescope"|"fzf-lua"
     picker = "snacks", ---@type sidekick.picker
+  },
+  --- Review Claude's responses like pull requests.
+  --- Each turn (prompt + response + changed files) can be read, commented on
+  --- line by line, and sent back to the CLI. See `:Sidekick review`.
+  ---@class sidekick.review.Config
+  review = {
+    enabled = true,
+    width = 0.94, -- fraction of the screen used by the overlay
+    height = 0.9,
+    sidebar_width = 38, -- columns for the turn/file tree
+    -- number of context lines shown around each change
+    context = 3,
+    -- automatically refresh while the overlay is open and Claude is writing
+    watch = true,
   },
   copilot = {
     -- track copilot's status with `didChangeStatus`
@@ -798,6 +822,14 @@ Here's a list of the available commands:
 - `send`: Send a message to the current CLI tool.
 - `prompt`: Select a prompt to send to the current CLI tool.
 
+**Review (`review`)**
+
+- `open`: Open the review overlay.
+- `toggle`: Toggle the review overlay.
+- `close`: Close the review overlay.
+- `submit`: Send pending comments to the CLI without opening the UI.
+- `clear`: Drop stored comments (`all=true` for every turn).
+
 </details>
 
 <details><summary>
@@ -842,6 +874,123 @@ Here are some examples of how to use the `:Sidekick` command:
   ```
 
   </details>
+
+## 🔍 Review Claude's responses like pull requests
+
+Every Claude turn — your prompt, its answer, and the files it touched — is
+treated as a pull request you can read, comment on, and send back.
+
+```vim
+:Sidekick review
+```
+
+```lua
+require("sidekick.review").toggle()
+```
+
+### How it works
+
+The review reads Claude Code's own session transcript
+(`~/.claude/projects/<project>/<session>.jsonl`) rather than scraping the
+terminal. Because `Edit` tool calls keep their `old_string`/`new_string`, the
+diffs are reconstructed exactly instead of being guessed from rendered output:
+sidekick walks the turns backwards from the file on disk, undoing each recorded
+edit, so **turn 3's diff shows turn 3's change even if turn 5 edited the same
+file again**. If the chain breaks — you hand-edited the file, or it was
+deleted — the diff is marked *approximate* and shown without line numbers
+rather than inventing them.
+
+> [!NOTE]
+> This works with the `claude` CLI. Other tools do not write a compatible
+> transcript, so `:Sidekick review` will report that it found none.
+
+### The overlay
+
+```text
+╭─────────── turns ────────────╮╭──────────────────── review ────────────────────╮
+│ Claude Review                ││lua/greet.lua                             +3 -2 │
+│ session 4f2a91c              ││ not reviewed · x toggle viewed · c comment     │
+│──────────────────────────────││────────────────────────────────────────────────│
+│▾ #2 Use vim.notify …  󱎫  1 3h││@@ -1,11 +1,12 @@                               │
+│    󰭹 Response              1 ││   3    3   function M.greet(name)              │
+│     lua/greet.lua     2 +3 -2││   4      -   print('hi ' .. name)              │
+│    lua/brand.lua        +3 -0││        4 +   vim.notify('hi ' .. name)         │
+│▸ #1 What does this module do?││╭ ✓ [c1] you · resolved                         │
+│                              │││ Should this respect `vim.log.levels`?         │
+│                              │││ ↳ claude                                      │
+│                              │││   Switched to vim.log.levels.INFO.            │
+│                              ││╰───────────────────────────────────            │
+╰──────────────────────────────╯╰────────────────────────────────────────────────╯
+  1 pending          c comment · r reply · S submit · x viewed · g? help · q quit
+```
+
+- **Sidebar** — turns newest first. Expand one to get its `Response` plus every
+  changed file with `+`/`-` counts, a viewed mark, and a comment count.
+- **Main pane** — either the rendered response (prose, collapsed thinking,
+  one line per tool call) or a unified diff with real line numbers.
+- **Threads** render inline, right under the line they are attached to.
+
+Floating windows are used deliberately: `cli.tab_scoped` binds a CLI session to
+a tabpage, so opening the review in a new tab would talk to the wrong Claude.
+
+### Round trip
+
+1. Put the cursor on a diff or response line and press `c` (works on a visual
+   range too). The quoted line is shown above the composer and can't be edited
+   into your comment.
+2. Press `S` to submit. Every pending comment is folded into **one** message,
+   each tagged `[c1]`, `[c2]`…, with the quoted code and file:line, and Claude
+   is asked to lead its replies with the same tag.
+3. When Claude answers, the tags are parsed back out and each reply is threaded
+   under the comment it answers; answered comments become *resolved*. The
+   overlay watches the transcript, so this happens without pressing anything
+   (`R` forces a refresh).
+4. Press `r` on a thread to follow up — it becomes pending again, and the next
+   submission carries the whole conversation so Claude has the context.
+
+### Keymaps
+
+| Key | Where | Action |
+|---|---|---|
+| `<CR>` | sidebar | expand turn / open item and focus it |
+| `o` | sidebar | preview without leaving the sidebar |
+| `<Tab>` | both | switch panes |
+| `J` / `K` | both | next / previous item, previewing as you go |
+| `c` | diff pane | comment on the line (or visual range) |
+| `r` | diff pane | reply to the thread under the cursor |
+| `e` / `d` | diff pane | edit / delete the comment under the cursor |
+| `<Space>` | diff pane | resolve or unresolve the comment |
+| `x` | both | toggle *viewed* for the response or file |
+| `t` | both | expand or collapse Claude's thinking |
+| `]c` / `[c` | diff pane | next / previous comment |
+| `]h` / `[h` | diff pane | next / previous hunk |
+| `gf` | diff pane | open the real file at this line |
+| `S` / `A` | both | submit this turn's comments / all pending comments |
+| `R` | both | refresh from the transcript |
+| `g?` | both | help |
+| `q` | both | close |
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `:Sidekick review open` | open the overlay |
+| `:Sidekick review toggle` | toggle it |
+| `:Sidekick review close` | close it |
+| `:Sidekick review submit` | send pending comments without opening the UI |
+| `:Sidekick review submit all=true` | send pending comments from every turn |
+| `:Sidekick review clear` | drop the latest turn's comments |
+| `:Sidekick review clear all=true` | drop every stored comment |
+
+Comments live in `stdpath("state")/sidekick/review/<project>.json`, so a review
+survives restarts.
+
+### Statusline
+
+```lua
+require("sidekick.review").status() --> " 3" when comments are pending, else nil
+require("sidekick.review").pending() --> number of pending comments
+```
 
 ## 📟 Statusline Integration
 

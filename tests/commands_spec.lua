@@ -86,7 +86,7 @@ describe("commands", function()
       {
         name = "completes root commands",
         input = "",
-        expected_completions = { "cli", "nes" },
+        expected_completions = { "cli", "nes", "review" },
       },
       {
         name = "completes subcommands",
@@ -136,7 +136,7 @@ describe("commands", function()
       {
         name = "strips command prefix",
         input = "Sidekick ",
-        expected = { "cli", "nes" },
+        expected = { "cli", "nes", "review" },
       },
       {
         name = "suggests subcommands",

@@ -4,6 +4,15 @@ local Util = require("sidekick.util")
 
 local M = {}
 
+--- How each verdict is phrased to the agent. A review that only leaves comments
+--- reads very differently from one that blocks, and the agent should be able to
+--- tell which it just received.
+M.VERDICTS = {
+  approved = "**Approved.** This looks good to me — no changes needed.",
+  changes = "**Changes requested.** Please address the comments below before moving on.",
+  comment = "**Comments only.** Take these as suggestions, not blockers.",
+}
+
 --- Instruction appended so replies can be threaded back onto comments.
 M.instructions = table.concat({
   "Please address each comment. Start every reply with its tag on its own line",
@@ -65,7 +74,7 @@ end
 
 --- Build the full review message.
 ---@param comments sidekick.review.Comment[]
----@param opts? {verdict?:string, note?:string, turn?:sidekick.review.Turn}
+---@param opts? {verdict?:"approved"|"changes"|"comment", note?:string, turn?:sidekick.review.Turn}
 ---@return string?
 function M.render(comments, opts)
   opts = opts or {}
@@ -85,7 +94,7 @@ function M.render(comments, opts)
 
   if opts.verdict then
     out[#out + 1] = ""
-    out[#out + 1] = "**Verdict:** " .. opts.verdict
+    out[#out + 1] = M.VERDICTS[opts.verdict] or ("**Verdict:** " .. opts.verdict)
   end
   if opts.note and opts.note ~= "" then
     out[#out + 1] = ""
@@ -108,7 +117,7 @@ end
 ---@field cwd string
 ---@field turn? sidekick.review.Turn only this turn's comments (all turns when nil)
 ---@field comments? sidekick.review.Comment[] override which comments to send
----@field verdict? string e.g. "approved", "changes requested"
+---@field verdict? "approved"|"changes"|"comment"
 ---@field note? string free-form text added above the comments
 ---@field submit? boolean press enter in the CLI (default true)
 ---@field name? string CLI tool to send to

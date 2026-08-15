@@ -1001,6 +1001,49 @@ function UI:pick_session()
   })
 end
 
+--- Submit a review carrying a verdict, the way a PR review does.
+---
+--- Comment-only feedback and "this is blocking" read very differently to the
+--- agent, and an approval with nothing attached is still a useful thing to be
+--- able to say.
+---@param verdict "approved"|"changes"|"comment"
+function UI:verdict(verdict)
+  local turn = self:turn()
+  local comments = turn and self.store:for_turn(turn.id, { status = "pending" }) or {}
+
+  if verdict ~= "approved" and #comments == 0 then
+    Util.warn("sidekick.review: no pending comments — use `ga` to approve as is")
+    return
+  end
+
+  local preview = Submit.render(comments, { turn = turn, verdict = verdict })
+  local label = verdict == "approved" and "Approve" or (verdict == "changes" and "Request changes" or "Comment")
+  require("sidekick.review.comment").open({
+    title = ("%s%s"):format(label, #comments > 0 and (" · %d comment%s"):format(#comments, #comments == 1 and "" or "s") or ""),
+    body = preview or "",
+    height = 0.6,
+    submit_label = "send",
+    on_submit = function(body)
+      body = clean(body)
+      if not body then
+        Util.warn("sidekick.review: empty message, nothing sent")
+        return
+      end
+      self:at_origin(function()
+        require("sidekick.cli").send({ msg = body, submit = true, focus = false })
+      end)
+      for _, c in ipairs(comments) do
+        self.store:set_status(c.id, "sent")
+      end
+      if turn then
+        self.store:set_verdict(turn.id, verdict)
+      end
+      self:render({ keep_cursor = true })
+      Util.info(("sidekick.review: %s sent"):format(label:lower()))
+    end,
+  })
+end
+
 function UI:help()
   local lines = {
     "# Sidekick Review",
@@ -1044,6 +1087,8 @@ function UI:help()
     "## Submitting",
     "  S           submit this turn's pending comments",
     "  A           submit every pending comment across all turns",
+    "  ga          approve this turn (with or without comments)",
+    "  gr          request changes — the comments are blocking",
     "",
     "Replies are asked to carry their tag (`[c1]`, `[c2]`…) so they thread back",
     "under the comment they answer. The transcript is watched, so answers appear",
@@ -1134,6 +1179,12 @@ function UI:keymaps(buf, which)
   map("n", "s", function()
     self:pick_session()
   end, "pick a session")
+  map("n", "ga", function()
+    self:verdict("approved")
+  end, "approve")
+  map("n", "gr", function()
+    self:verdict("changes")
+  end, "request changes")
   map("n", "J", function()
     self:cycle(1)
   end, "next item")

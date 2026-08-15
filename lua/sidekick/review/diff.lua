@@ -34,6 +34,7 @@ local M = {}
 ---@field added integer
 ---@field removed integer
 ---@field created boolean
+---@field deleted boolean the file was removed by this turn
 ---@field approx boolean line numbers could not be verified against disk
 ---@field binary boolean
 ---@field missing boolean file is not on disk
@@ -317,6 +318,7 @@ function M.file(turns, turn, file)
     added = 0,
     removed = 0,
     created = file.created,
+    deleted = file.deleted == true,
     approx = false,
     binary = false,
     missing = M.read(file.path) == nil,
@@ -325,6 +327,24 @@ function M.file(turns, turn, file)
 
   if not ret.missing and is_binary(file.path) then
     ret.binary = true
+    return ret
+  end
+
+  if ret.deleted then
+    -- a `Delete File` section carries no body, so the content that was lost is
+    -- only recoverable when a later turn put the file back. Show it when we
+    -- have it; say plainly that it is gone when we do not.
+    local states = M.reconstruct(turns, file.path)[turn.id]
+    local before = states and states.before or nil
+    if before and before ~= "" then
+      ret.hunks = M.hunks(before, "")
+      ret.approx = false
+    else
+      ret.approx = true
+    end
+    for _, h in ipairs(ret.hunks) do
+      ret.removed = ret.removed + #h.lines
+    end
     return ret
   end
 

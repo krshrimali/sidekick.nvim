@@ -53,6 +53,7 @@ M.icons = {
   response   = "󰭹 ",
   file       = " ",
   new        = " ",
+  removed    = " ",
   viewed     = " ",
   unviewed   = " ",
   comment    = " ",
@@ -65,6 +66,8 @@ M.icons = {
   failed     = "✗ ",
   thinking   = " ",
   pending_turn = "󱎫 ",
+  approved   = "✓",
+  changes    = "✗",
 }
 
 ---@param ts number
@@ -281,6 +284,13 @@ function M.sidebar(ctx)
     local prefix = indent .. (open and M.icons.expanded or M.icons.collapsed) .. ("#%d "):format(turn.idx)
     local badge = n_pending > 0 and (" %s%d"):format(M.icons.comment, n_pending)
       or (n_total > 0 and (" %s%d"):format(M.icons.comment, n_total) or "")
+    -- a turn you have already ruled on should read as settled at a glance
+    local verdict = ctx.store.verdict and ctx.store:verdict(turn.id) or nil
+    if verdict == "approved" then
+      badge = " " .. M.icons.approved .. badge
+    elseif verdict == "changes" then
+      badge = " " .. M.icons.changes .. badge
+    end
     if turn.pending then
       badge = " " .. M.icons.pending_turn .. badge
     end
@@ -365,8 +375,15 @@ function M.sidebar(ctx)
       end
 
       for _, d in ipairs(ctx.diffs[turn.id] or {}) do
+        local icon = M.icons.file
         local stat = ("+%d -%d"):format(d.added, d.removed)
-        child(d.path, d.created and M.icons.new or M.icons.file, d.rel, stat, "SidekickReviewStat")
+        local stat_hl = "SidekickReviewStat"
+        if d.deleted then
+          icon, stat, stat_hl = M.icons.removed, "deleted", "SidekickReviewDiffDelete"
+        elseif d.created then
+          icon = M.icons.new
+        end
+        child(d.path, icon, d.rel, stat, stat_hl)
       end
       if #(ctx.diffs[turn.id] or {}) == 0 then
         add(indent .. "    no files changed", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank", turn = turn.id })
@@ -753,8 +770,8 @@ function M.diff(ctx, turn, diff)
     lines[#lines + 1] = { text = text, hl = hl, item = item }
   end
 
-  local stat = ("+%d -%d"):format(diff.added, diff.removed)
-  local suffix = diff.created and "  (new file)" or ""
+  local stat = diff.deleted and "deleted" or ("+%d -%d"):format(diff.added, diff.removed)
+  local suffix = diff.created and "  (new file)" or (diff.deleted and "  (deleted)" or "")
   local title = M.path(diff.rel, math.max(W - #stat - #suffix - 2, 8)) .. suffix
   add(
     pad(title, math.max(W - #stat - 1, 1)) .. stat,
@@ -763,7 +780,9 @@ function M.diff(ctx, turn, diff)
   )
   local viewed = ctx.store:is_viewed(turn.id, diff.path)
   local note = "x toggle viewed · c comment"
-  if diff.approx then
+  if diff.deleted then
+    note = "removed by this turn"
+  elseif diff.approx then
     note = "approximate line numbers (file changed since)"
   elseif diff.missing then
     note = "file no longer on disk"
@@ -781,7 +800,9 @@ function M.diff(ctx, turn, diff)
     return lines
   end
   if #diff.hunks == 0 then
-    add(" no textual changes", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank" })
+    local why = diff.deleted and " this file was deleted — its contents are not in the transcript"
+      or " no textual changes"
+    add(why, { { 0, -1, diff.deleted and "SidekickReviewDiffDelete" or "SidekickReviewDim" } }, { kind = "blank" })
     return lines
   end
 

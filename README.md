@@ -943,7 +943,8 @@ shown without line numbers rather than inventing them.
 
 - **Sidebar** — turns newest first. Expand one for its `Response`, its
   `Threads`, and every changed file with `+`/`-` counts, a viewed mark, and a
-  comment count.
+  comment count. New files are marked, deleted ones say `deleted` rather than
+  reporting an empty change.
 - **Review pane** — the rendered response (markdown headings, lists, quotes and
   syntax-highlighted code fences, with tool calls on one line each), a unified
   diff with real line numbers, or the threads view.
@@ -1028,6 +1029,20 @@ Comments are stored per **project**, not per session, so they survive narrowing.
 4. Press `r` on a thread to follow up — it becomes pending again, and the next
    submission carries the whole conversation so the agent has the context.
 
+### Verdicts
+
+A review can carry a ruling, not just comments — the agent should be able to
+tell a suggestion from a blocker:
+
+| Key | Sends |
+|---|---|
+| `ga` | **Approved.** Works with no comments attached, which is often the point. |
+| `gr` | **Changes requested.** Refuses if nothing is pending — there would be nothing to block on. |
+| `S` | Comments only, no ruling. |
+
+The verdict is recorded per turn and shown in the sidebar (`✓` / `✗`), so a
+turn you have already ruled on reads as settled.
+
 ### Threads
 
 A conversation that has been round-tripped a few times gets long, and several
@@ -1064,6 +1079,7 @@ unit:
 | `]h` / `[h` | review pane | next / previous hunk |
 | `gf` | review pane | open the real file at this line |
 | `S` / `A` | both | submit this turn's comments / all pending comments |
+| `ga` / `gr` | both | approve / request changes |
 | `R` | both | refresh from the transcript |
 | `g?` | both | help |
 | `q` | both | close |

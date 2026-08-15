@@ -37,6 +37,7 @@ local M = {}
 ---@field seq integer
 ---@field comments sidekick.review.Comment[]
 ---@field viewed table<string, table<string, boolean>> turn id -> item key -> viewed
+---@field verdicts table<string, string> turn id -> verdict
 
 ---@class sidekick.review.Store
 ---@field cwd string
@@ -95,7 +96,7 @@ end
 
 ---@return sidekick.review.Data
 local function empty()
-  return { version = M.VERSION, seq = 0, comments = {}, viewed = {} }
+  return { version = M.VERSION, seq = 0, comments = {}, viewed = {}, verdicts = {} }
 end
 
 function Store:load()
@@ -119,6 +120,7 @@ function Store:load()
   data.seq = data.seq or 0
   data.comments = data.comments or {}
   data.viewed = data.viewed or {}
+  data.verdicts = data.verdicts or {}
   for _, c in ipairs(data.comments) do
     c.replies = c.replies or {}
     c.anchor = c.anchor or {}
@@ -301,6 +303,21 @@ function Store:set_viewed(turn, key, value)
   return value
 end
 
+--- Record the verdict a turn was reviewed with.
+---@param turn string
+---@param verdict "approved"|"changes"|"comment"
+function Store:set_verdict(turn, verdict)
+  self.data.verdicts = self.data.verdicts or {}
+  self.data.verdicts[turn] = verdict
+  self:save()
+end
+
+---@param turn string
+---@return string?
+function Store:verdict(turn)
+  return (self.data.verdicts or {})[turn]
+end
+
 --- Forget everything about a turn. Used by `:Sidekick review clear`.
 ---@param turn? string clears all turns when nil
 function Store:clear(turn)
@@ -309,6 +326,9 @@ function Store:clear(turn)
       return c.turn ~= turn
     end, self.data.comments)
     self.data.viewed[turn] = nil
+    if self.data.verdicts then
+      self.data.verdicts[turn] = nil
+    end
   else
     self.data = empty()
   end

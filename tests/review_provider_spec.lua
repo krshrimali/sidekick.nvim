@@ -282,6 +282,63 @@ describe("review.provider.codex", function()
   end)
 end)
 
+describe("review.diff deletions", function()
+  local Provider = require("sidekick.review.provider")
+
+  ---@param path string
+  ---@param patch string
+  ---@return sidekick.review.Turn
+  local function turn_with(path, patch, id)
+    local turn = {
+      id = id or "t",
+      idx = 1,
+      prompt = "",
+      title = "",
+      ts = 0,
+      blocks = {},
+      tools = {},
+      files = {},
+      cwd = vim.fs.dirname(path),
+      session = "s",
+      provider = "codex",
+      pending = false,
+    }
+    Provider.apply_patch(turn, Patch.parse(patch), "x")
+    return turn
+  end
+
+  it("marks a deleted file as deleted, not as an empty change", function()
+    local path = vim.fn.tempname() .. "/gone.lua"
+    local turn = turn_with(path, "*** Begin Patch\n*** Delete File: " .. path .. "\n*** End Patch")
+    assert.are.same(1, #turn.files)
+    assert.is_true(turn.files[1].deleted)
+
+    local d = Diff.file({ turn }, turn, turn.files[1])
+    assert.is_true(d.deleted)
+    -- `Delete File` carries no body, so there is nothing honest to show
+    assert.are.same(0, #d.hunks)
+    assert.are.same(0, d.removed)
+  end)
+
+  it("does not invent the content of a file re-created later", function()
+    local dir = vim.fn.tempname()
+    local path = dir .. "/back.lua"
+    Fixture.write(path, "local a = 1\nlocal b = 2\n")
+    local t1 = turn_with(path, "*** Begin Patch\n*** Delete File: " .. path .. "\n*** End Patch", "t1")
+    local t2 = turn_with(path, "*** Begin Patch\n*** Add File: " .. path .. "\n+local a = 1\n+local b = 2\n*** End Patch", "t2")
+
+    -- a later creation says nothing about what the deletion removed
+    local del = Diff.file({ t1, t2 }, t1, t1.files[1])
+    assert.is_true(del.approx)
+    assert.are.same(0, del.removed)
+
+    -- but the creation itself is still exact
+    local add = Diff.file({ t1, t2 }, t2, t2.files[1])
+    assert.is_false(add.approx)
+    assert.are.same(2, add.added)
+  end)
+end)
+
 describe("review.markdown", function()
   it("emits exactly one line per source line", function()
     local src = table.concat({

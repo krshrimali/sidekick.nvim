@@ -689,6 +689,116 @@ describe("review.ui sessions", function()
   end)
 end)
 
+describe("review.ui verdicts", function()
+  local fx ---@type sidekick.test.ReviewFixture
+  local restore_cli, restore_notify, sent, notices
+
+  before_each(function()
+    fx = Fixture.setup()
+    sent, restore_cli = Fixture.stub_cli()
+    notices, restore_notify = Fixture.stub_notify()
+  end)
+
+  after_each(function()
+    UI.close()
+    restore_cli()
+    restore_notify()
+    fx.cleanup()
+  end)
+
+  it("approves a turn with nothing pending", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    vim.api.nvim_set_current_win(ui.main.win)
+    local body
+    local _, restore = Fixture.stub_composer(function(o)
+      body = o.body
+      return o.body
+    end)
+    feed("ga")
+    restore()
+
+    assert.is_not_nil(body:find("**Approved.**", 1, true))
+    assert.is_nil(body:find("### [c", 1, true))
+    assert.are.same(1, #sent)
+    assert.are.same("approved", Store.get(fx.cwd):verdict(ui.sel_turn))
+  end)
+
+  it("refuses to request changes with nothing to block on", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    vim.api.nvim_set_current_win(ui.main.win)
+    feed("gr")
+    local warned = false
+    for _, n in ipairs(notices) do
+      warned = warned or n:find("no pending comments", 1, true) ~= nil
+    end
+    assert.is_true(warned)
+    assert.are.same(0, #sent)
+  end)
+
+  it("requests changes and carries the comments", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    local store = Store.get(fx.cwd)
+    store:add({
+      turn = ui.sel_turn,
+      target = "file",
+      file = fx.file,
+      rel = "lua/greet.lua",
+      lnum = 4,
+      side = "new",
+      anchor_key = "new:4",
+      anchor = { "x" },
+      body = "needs a test",
+    })
+    ui:render()
+    vim.api.nvim_set_current_win(ui.main.win)
+    local body
+    local _, restore = Fixture.stub_composer(function(o)
+      body = o.body
+      return o.body
+    end)
+    feed("gr")
+    restore()
+
+    assert.is_not_nil(body:find("**Changes requested.**", 1, true))
+    assert.is_not_nil(body:find("needs a test", 1, true))
+    assert.is_not_nil(body:find("### [c1]", 1, true))
+    assert.are.same("sent", store:find("c1").status)
+    assert.are.same("changes", store:verdict(ui.sel_turn))
+  end)
+
+  it("marks the verdict in the sidebar", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    local store = Store.get(fx.cwd)
+    store:set_verdict(ui.transcript.turns[1].id, "approved")
+    store:set_verdict(ui.transcript.turns[2].id, "changes")
+    ui:render()
+    local sb = text(ui.sidebar.buf)
+    assert.is_not_nil(sb:find("✓", 1, true))
+    assert.is_not_nil(sb:find("✗", 1, true))
+  end)
+
+  it("records nothing when the message is emptied", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    vim.api.nvim_set_current_win(ui.main.win)
+    local _, restore = Fixture.stub_composer("   \n  ")
+    feed("ga")
+    restore()
+    assert.are.same(0, #sent)
+    assert.is_nil(Store.get(fx.cwd):verdict(ui.sel_turn))
+  end)
+
+  it("persists a verdict and clears it with the turn", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    local turn = ui.sel_turn
+    Store.get(fx.cwd):set_verdict(turn, "approved")
+    Store.reset()
+    local reloaded = Store.get(fx.cwd)
+    assert.are.same("approved", reloaded:verdict(turn))
+    reloaded:clear(turn)
+    assert.is_nil(reloaded:verdict(turn))
+  end)
+end)
+
 describe("review.ui layouts", function()
   local fx ---@type sidekick.test.ReviewFixture
   local restore_cli, restore_notify, sent

@@ -1146,7 +1146,7 @@ unit:
 | `J` / `K` | both | next / previous item, previewing as you go |
 | `c` | review pane | comment on the line (or visual range) |
 | `r` | review pane | reply to the thread under the cursor |
-| `e` / `d` | review pane | edit / delete the comment under the cursor |
+| `E` / `d` | review pane | edit / delete the comment under the cursor |
 | `<Space>` | review pane | resolve or unresolve the comment |
 | `<CR>` / `za` | review pane | fold or unfold the thread under the cursor |
 | `zM` / `zR` | review pane | fold or unfold every thread |
@@ -1154,7 +1154,7 @@ unit:
 | `<CR>` | sidebar | on a session group: fold or unfold it |
 | `s` | both | narrow to one session / widen back to the whole project |
 | `x` | both | toggle *viewed* for the response or file |
-| `t` | both | expand or collapse the agent's thinking |
+| `T` | both | expand or collapse the agent's thinking |
 | `]c` / `[c` | review pane | next / previous comment |
 | `]h` / `[h` | review pane | next / previous hunk |
 | `gf` | review pane | open the real file at this line |
@@ -1163,6 +1163,11 @@ unit:
 | `R` | both | refresh from the transcript |
 | `g?` | both | help |
 | `q` | both | close |
+
+The review buffer is read-only, so keys like `c`, `d` and `x` are free to
+rebind — they could not do anything anyway. **Motions are left alone**: `h`,
+`l`, `e`, `t`, `w`, `b`, `f` and friends all still move the cursor, which
+matters because the diff pane does not wrap. Use `<Tab>` to change panes.
 
 ### Commands
 

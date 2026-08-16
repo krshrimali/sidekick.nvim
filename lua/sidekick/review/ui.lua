@@ -1145,6 +1145,7 @@ function UI:help()
     "",
     "## Navigation",
     "  <Tab>       switch between the sidebar and the review pane",
+    "              (h, l, e and t are left alone as motions)",
     "  <CR>        sidebar: fold a session group / expand a turn / open an item",
     "  o           sidebar: open without leaving the sidebar",
     "  J / K       next / previous item, previewing as you go",
@@ -1155,11 +1156,11 @@ function UI:help()
     "## Reviewing",
     "  c           comment on the line under the cursor (works on a visual range)",
     "  r           reply to the thread under the cursor",
-    "  e           edit the comment under the cursor",
+    "  E           edit the comment under the cursor",
     "  d           delete the comment under the cursor",
     "  <Space>     resolve / unresolve the comment under the cursor",
     "  x           toggle viewed for the response or file",
-    "  t           expand / collapse the agent's thinking",
+    "  T           expand / collapse the agent's thinking",
     "",
     "## Threads",
     "  The `Threads` node in the sidebar lists every conversation on a turn in",
@@ -1255,7 +1256,7 @@ function UI:keymaps(buf, which)
   map("n", "x", function()
     self:toggle_viewed()
   end, "toggle viewed")
-  map("n", "t", function()
+  map("n", "T", function()
     self.show_thinking = not self.show_thinking
     self:render({ keep_cursor = true })
   end, "toggle thinking")
@@ -1291,13 +1292,7 @@ function UI:keymaps(buf, which)
     map("n", "<2-LeftMouse>", function()
       self:activate({ focus_main = true })
     end, "open")
-    map("n", "l", function()
-      self:focus_pane("main")
-    end, "focus diff")
   else
-    map("n", "h", function()
-      self:focus_pane("sidebar")
-    end, "focus sidebar")
     map("n", "c", function()
       self:comment()
     end, "comment")
@@ -1316,7 +1311,7 @@ function UI:keymaps(buf, which)
     map("n", "r", function()
       self:reply()
     end, "reply")
-    map("n", "e", function()
+    map("n", "E", function()
       self:edit_comment()
     end, "edit comment")
     map("n", "d", function()

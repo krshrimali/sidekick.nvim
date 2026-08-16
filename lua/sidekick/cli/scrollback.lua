@@ -19,8 +19,6 @@ local MOUSE_SCROLL_UP = vim.keycode("<ScrollWheelUp>")
 local MOUSE_SCROLL_DOWN = vim.keycode("<ScrollWheelDown>")
 local MOUSE_CLICK = vim.keycode("<LeftMouse>")
 
-local transcript_tools = { claude = true, codex = true }
-
 -- track mouse scrolling
 vim.on_key(function(key, typed)
   key = typed or key
@@ -42,51 +40,7 @@ end)
 
 ---@param terminal sidekick.cli.Terminal
 function M.is_enabled(terminal)
-  local have_dump = terminal.parent and terminal.parent.dump ~= nil
-  local have_transcript = terminal.tool and transcript_tools[terminal.tool.name] == true
-  return (have_dump or have_transcript) and not terminal.tool.native_scroll
-end
-
---- Build a stable, copyable conversation from a CLI's structured transcript.
---- TUIs use an alternate screen, so their terminal buffer often contains only
---- the visible viewport. Claude and Codex persist the complete conversation;
---- use that as the embedded-terminal scrollback source.
----@param terminal sidekick.cli.Terminal
----@return string?
-function M.transcript_dump(terminal)
-  local name = terminal.tool and terminal.tool.name or nil
-  if not (name and transcript_tools[name]) then
-    return nil
-  end
-  local tr = require("sidekick.review.model").load(terminal.cwd, nil, { provider = name })
-  if not tr or #tr.turns == 0 then
-    return nil
-  end
-
-  local out = {} ---@type string[]
-  for _, turn in ipairs(tr.turns) do
-    out[#out + 1] = ("── You · %s ──"):format(turn.title)
-    vim.list_extend(out, vim.split(turn.prompt, "\n", { plain = true }))
-    out[#out + 1] = ""
-
-    local provider = require("sidekick.review.provider").get(turn.provider)
-    out[#out + 1] = ("── %s ──"):format(provider and provider.label or turn.provider or "Agent")
-    local have_response = false
-    for _, block in ipairs(turn.blocks) do
-      if block.kind == "text" and block.text and block.text ~= "" then
-        if have_response then
-          out[#out + 1] = ""
-        end
-        vim.list_extend(out, vim.split(block.text, "\n", { plain = true }))
-        have_response = true
-      end
-    end
-    if not have_response then
-      out[#out + 1] = "(response in progress)"
-    end
-    out[#out + 1] = ""
-  end
-  return table.concat(out, "\n")
+  return terminal.parent and terminal.parent.dump ~= nil and not terminal.tool.native_scroll
 end
 
 ---@param terminal sidekick.cli.Terminal
@@ -161,7 +115,7 @@ function M:open(win_pos)
 
   self.cursor = vim.api.nvim_win_get_cursor(terminal.win)
 
-  local text = terminal.parent and terminal.parent.dump and terminal.parent:dump() or M.transcript_dump(terminal)
+  local text = terminal.parent and terminal.parent:dump() or nil
   if not text then
     return self:scroll(win_pos)
   end

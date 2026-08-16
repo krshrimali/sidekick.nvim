@@ -749,7 +749,7 @@ end
 function UI:reply()
   local item = self:main_item()
   if not item or not item.comment then
-    Util.warn("put the cursor on a comment to reply")
+    Util.warn("sidekick.review: no comment on this line — `]c` jumps to the next one")
     return
   end
   local c = item.comment
@@ -772,7 +772,7 @@ end
 function UI:edit_comment()
   local item = self:main_item()
   if not item or not item.comment then
-    Util.warn("put the cursor on a comment to edit")
+    Util.warn("sidekick.review: no comment on this line — `]c` jumps to the next one")
     return
   end
   local c = item.comment
@@ -792,7 +792,7 @@ end
 function UI:delete_comment()
   local item = self:main_item()
   if not item or not item.comment then
-    Util.warn("put the cursor on a comment to delete")
+    Util.warn("sidekick.review: no comment on this line — `]c` jumps to the next one")
     return
   end
   local c = item.comment
@@ -865,7 +865,7 @@ end
 function UI:resolve_comment()
   local item = self:main_item()
   if not item or not item.comment then
-    Util.warn("put the cursor on a comment to resolve")
+    Util.warn("sidekick.review: no comment on this line — `]c` jumps to the next one")
     return
   end
   local c = item.comment
@@ -1157,6 +1157,7 @@ function UI:help()
     "  c           comment on the line under the cursor (works on a visual range)",
     "  r           reply to the thread under the cursor",
     "  E           edit the comment under the cursor",
+    "              (E, r and <Space> also work from the sidebar)",
     "  d           delete the comment under the cursor",
     "  <Space>     resolve / unresolve the comment under the cursor",
     "  x           toggle viewed for the response or file",
@@ -1282,6 +1283,34 @@ function UI:keymaps(buf, which)
     self:cycle(-1)
   end, "previous item")
 
+  --- Comment actions pressed in the sidebar: there are no comments there, so
+  --- move to the review pane and onto one, then act. Silence was the worst
+  --- possible answer -- these keys are unmapped in the sidebar otherwise, so
+  --- they just slid the cursor sideways as motions.
+  ---@param action fun()
+  local function from_sidebar(action)
+    return function()
+      self:focus_pane("main")
+      local row = vim.api.nvim_win_get_cursor(self.main.win)[1]
+      local on_comment = self.main.lines[row] and self.main.lines[row].item and self.main.lines[row].item.comment
+      if not on_comment then
+        -- land on the first comment in view, if there is one
+        for i, l in ipairs(self.main.lines) do
+          if l.item and l.item.kind == "comment" then
+            pcall(vim.api.nvim_win_set_cursor, self.main.win, { i, 0 })
+            on_comment = true
+            break
+          end
+        end
+      end
+      if not on_comment then
+        Util.warn("sidekick.review: nothing here has comments yet — press `c` on a line to add one")
+        return
+      end
+      action()
+    end
+  end
+
   if which == "sidebar" then
     map("n", "<CR>", function()
       self:activate({ focus_main = true })
@@ -1292,6 +1321,15 @@ function UI:keymaps(buf, which)
     map("n", "<2-LeftMouse>", function()
       self:activate({ focus_main = true })
     end, "open")
+    map("n", "E", from_sidebar(function()
+      self:edit_comment()
+    end), "edit comment")
+    map("n", "r", from_sidebar(function()
+      self:reply()
+    end), "reply")
+    map("n", "<Space>", from_sidebar(function()
+      self:resolve_comment()
+    end), "resolve comment")
   else
     map("n", "c", function()
       self:comment()

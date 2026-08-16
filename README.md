@@ -1169,6 +1169,10 @@ rebind — they could not do anything anyway. **Motions are left alone**: `h`,
 `l`, `e`, `t`, `w`, `b`, `f` and friends all still move the cursor, which
 matters because the diff pane does not wrap. Use `<Tab>` to change panes.
 
+`E`, `r` and `<Space>` also work from the sidebar: they move to the review pane
+and onto a comment first, rather than doing nothing where there are no comments
+to act on.
+
 ### Commands
 
 | Command | Description |

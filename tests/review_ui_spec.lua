@@ -257,7 +257,7 @@ describe("review.ui", function()
       return notices[#notices] or ""
     end
     feed("r")
-    assert.is_not_nil(last():find("cursor on a comment", 1, true))
+    assert.is_not_nil(last():find("no comment on this line", 1, true))
     feed("c")
     assert.is_not_nil(last():find("nothing to comment on", 1, true))
     feed("S")
@@ -926,6 +926,109 @@ describe("review marks", function()
     Marks.refresh()
     assert.are.same(0, #marks(vim.api.nvim_get_current_buf()))
     Config.review.signs.enabled = prev
+  end)
+end)
+
+describe("review keymaps", function()
+  local fx ---@type sidekick.test.ReviewFixture
+  local restore_cli, restore_notify, notices
+
+  before_each(function()
+    fx = Fixture.setup()
+    _, restore_cli = Fixture.stub_cli()
+    notices, restore_notify = Fixture.stub_notify()
+  end)
+
+  after_each(function()
+    UI.close()
+    restore_cli()
+    restore_notify()
+    fx.cleanup()
+  end)
+
+  ---@param buf integer
+  ---@param key string
+  local function is_mapped(buf, key)
+    for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+      if m.lhs == key then
+        return true
+      end
+    end
+    return false
+  end
+
+  it("leaves vim motions alone", function()
+    -- the buffer is read-only, so binding over operators costs nothing; motions
+    -- are how you move around it, and the diff pane does not wrap
+    local ui = Review.open({ cwd = fx.cwd })
+    for _, key in ipairs({ "e", "t", "h", "l", "w", "b", "f", "0", "$" }) do
+      assert.is_false(is_mapped(ui.main.buf, key), key .. " is bound in the review pane")
+    end
+    for _, key in ipairs({ "e", "t", "h", "l" }) do
+      assert.is_false(is_mapped(ui.sidebar.buf, key), key .. " is bound in the sidebar")
+    end
+  end)
+
+  it("edits a comment with E", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    Store.get(fx.cwd):add({
+      turn = ui.sel_turn,
+      target = "response",
+      anchor_key = "b2:1",
+      anchor = {},
+      body = "first draft",
+    })
+    ui:render()
+
+    vim.api.nvim_set_current_win(ui.main.win)
+    local row = row_where(ui.main, function(it)
+      return it.kind == "comment"
+    end)
+    vim.api.nvim_win_set_cursor(ui.main.win, { row, 0 })
+
+    local captured, restore = Fixture.stub_composer("edited")
+    feed("E")
+    restore()
+
+    assert.are.same("first draft", captured.opts.body)
+    assert.are.same("edited", Store.get(fx.cwd):find("c1").body)
+  end)
+
+  it("crosses to the review pane when a comment key is pressed in the sidebar", function()
+    -- these keys are meaningless in the sidebar, and doing nothing at all just
+    -- looked broken
+    local ui = Review.open({ cwd = fx.cwd })
+    Store.get(fx.cwd):add({
+      turn = ui.sel_turn,
+      target = "response",
+      anchor_key = "b2:1",
+      anchor = {},
+      body = "written earlier",
+    })
+    ui:render()
+
+    vim.api.nvim_set_current_win(ui.sidebar.win)
+    local captured, restore = Fixture.stub_composer("changed")
+    feed("E")
+    restore()
+
+    assert.are.same("written earlier", captured.opts.body)
+    assert.are.same(ui.main.win, vim.api.nvim_get_current_win())
+    local at = ui.main.lines[vim.api.nvim_win_get_cursor(ui.main.win)[1]]
+    assert.is_not_nil(at.item.comment)
+  end)
+
+  it("says so when there is no comment to act on", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    vim.api.nvim_set_current_win(ui.sidebar.win)
+    local _, restore = Fixture.stub_composer(nil)
+    feed("E")
+    restore()
+    local said = false
+    for _, n in ipairs(notices) do
+      said = said or n:find("nothing here has comments", 1, true) ~= nil
+    end
+    assert.is_true(said)
   end)
 end)
 

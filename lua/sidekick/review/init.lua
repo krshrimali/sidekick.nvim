@@ -85,8 +85,9 @@ function M.pick(opts)
 
   UI.select_session({
     cwd = cwd,
+    all = true,
     on_choice = function(src)
-      M.open(vim.tbl_extend("force", opts, { cwd = cwd, session = src.session }))
+      M.open(vim.tbl_extend("force", opts, { cwd = src.cwd, session = src.session }))
     end,
   })
 end

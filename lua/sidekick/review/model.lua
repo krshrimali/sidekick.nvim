@@ -129,9 +129,10 @@ end
 
 --- Every session available for `cwd`, newest first.
 ---@param cwd? string
+---@param opts? {all?:boolean}
 ---@return sidekick.review.Source[]
-function M.sessions(cwd)
-  return Transcript.sources(cwd)
+function M.sessions(cwd, opts)
+  return Transcript.sources(cwd, opts)
 end
 
 return M

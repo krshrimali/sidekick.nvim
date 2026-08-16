@@ -190,11 +190,13 @@ end
 
 --- Find every transcript belonging to `cwd`, newest first.
 ---@param cwd? string
----@param opts? {provider?:string}
+---@param opts? {provider?:string, all?:boolean}
 ---@return sidekick.review.Source[]
 function M.sources(cwd, opts)
   opts = opts or {}
-  cwd = vim.fs.normalize(cwd or vim.uv.cwd() or ".")
+  if not opts.all then
+    cwd = vim.fs.normalize(cwd or vim.uv.cwd() or ".")
+  end
   local ret = {} ---@type sidekick.review.Source[]
 
   for _, provider in ipairs(Provider.all()) do

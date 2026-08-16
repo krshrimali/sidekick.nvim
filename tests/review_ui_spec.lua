@@ -558,6 +558,121 @@ describe("review.ui sessions", function()
     assert.are.same("claude", sources[2].provider)
   end)
 
+  it("lists sessions across project directories for the external picker", function()
+    local Transcript = require("sidekick.review.transcript")
+    local other = vim.fs.normalize(fx.root .. "/other-project")
+    local data = Fixture.read(fx.transcript):gsub(vim.pesc(fx.cwd), other)
+    Fixture.write(fx.root .. "/claude/projects/" .. Transcript.encode(other) .. "/other.jsonl", data)
+    Transcript.clear_cache()
+
+    local sources = require("sidekick.review.model").sessions(nil, { all = true })
+    local found = {}
+    for _, src in ipairs(sources) do
+      found[src.cwd] = true
+    end
+    assert.is_true(found[fx.cwd])
+    assert.is_true(found[other])
+  end)
+
+  it("shows filters as selectable rows in the session picker", function()
+    add_codex()
+    local offered, select_opts
+    local prev = vim.ui.select
+    vim.ui.select = function(items, opts)
+      offered = items
+      select_opts = opts
+    end
+    UI.select_session({ cwd = fx.cwd, sources = Review.sessions(fx.cwd), on_choice = function() end })
+    vim.ui.select = prev
+
+    assert.are.same({ "directory", "provider", "sort" }, vim.tbl_map(function(item)
+      return item.control
+    end, { offered[1], offered[2], offered[3] }))
+    assert.are.same(5, #offered)
+    assert.is_false(select_opts.snacks.layout.preview)
+  end)
+
+  it("applies a visible provider filter and returns to the sessions", function()
+    add_codex()
+    local final, main_count
+    local prev = vim.ui.select
+    vim.ui.select = function(items, opts, cb)
+      if opts.prompt == "Provider:" then
+        for _, item in ipairs(items) do
+          if item.provider == "codex" then
+            return cb(item)
+          end
+        end
+      elseif not main_count then
+        main_count = 1
+        return cb(items[2]) -- visible Provider row
+      end
+      final = items
+    end
+    UI.select_session({ cwd = fx.cwd, sources = Review.sessions(fx.cwd), on_choice = function() end })
+    vim.ui.select = prev
+
+    assert.are.same("› Provider    codex", final[2].label)
+    assert.are.same(4, #final)
+    assert.are.same("codex", final[4].src.provider)
+  end)
+
+  it("makes session quickfix entries openable as reviews", function()
+    local src = Review.sessions(fx.cwd)[1]
+    UI.sessions_quickfix({ { src = src, label = "Claude Code  test session" } })
+    local info = vim.fn.getqflist({ items = 0, context = 0, title = 0, winid = 0 })
+
+    assert.are.same("Sidekick review sessions", info.title)
+    assert.are.same(1, #info.items)
+    assert.are.same(0, info.items[1].bufnr)
+    assert.are.same(src.session, info.context.sidekick_review_sessions[1].session)
+    assert.are.same("Open Sidekick review session", vim.fn.maparg("<CR>", "n", false, true).desc)
+    vim.cmd.cclose()
+  end)
+
+  it("ignores legacy sessions without directory metadata", function()
+    local sources = Review.sessions(fx.cwd)
+    table.insert(sources, 1, {
+      file = "/tmp/legacy.jsonl",
+      session = "legacy",
+      provider = "claude",
+      mtime = 1,
+      size = 1,
+    })
+    local offered
+    local prev = vim.ui.select
+    vim.ui.select = function(items)
+      offered = items
+    end
+    UI.select_session({ cwd = fx.cwd, sources = sources, all = true, on_choice = function() end })
+    vim.ui.select = prev
+
+    assert.are.same(4, #offered)
+    assert.are.same(fx.cwd, offered[4].src.cwd)
+  end)
+
+  it("filters and sorts session picker items", function()
+    local sources = {
+      { file = "/none/a", session = "a", cwd = "/z", provider = "claude", mtime = 10, size = 0 },
+      { file = "/none/b", session = "b", cwd = "/a", provider = "codex", mtime = 20, size = 0 },
+      { file = "/none/c", session = "c", cwd = "/a", provider = "claude", mtime = 30, size = 0 },
+    }
+    local items = UI.session_items(sources, { directory = "/a", sort = "oldest" })
+    assert.are.same({ "b", "c" }, vim.tbl_map(function(item)
+      return item.src.session
+    end, items))
+
+    items = UI.session_items(sources, { provider = "claude", sort = "directory" })
+    assert.are.same({ "c", "a" }, vim.tbl_map(function(item)
+      return item.src.session
+    end, items))
+
+    items = UI.session_items(sources, { directory = "/a", provider = "codex", sort = "newest" })
+    assert.are.same({ "b" }, vim.tbl_map(function(item)
+      return item.src.session
+    end, items))
+  end)
+
   it("shows the whole repository by default, grouped by session", function()
     add_codex()
     local ui = Review.open({ cwd = fx.cwd })
@@ -600,7 +715,7 @@ describe("review.ui sessions", function()
     vim.ui.select = function(items, _, cb)
       offered = items
       for _, item in ipairs(items) do
-        if item.src.provider == "claude" then
+        if item.src and item.src.provider == "claude" then
           return cb(item)
         end
       end
@@ -610,7 +725,7 @@ describe("review.ui sessions", function()
     feed("s")
     vim.ui.select = prev
 
-    assert.are.same(2, #offered)
+    assert.are.same(5, #offered)
     assert.are.same("claude", ui.transcript.provider)
     assert.are.same(1, #ui.transcripts)
     assert.is_not_nil(text(ui.sidebar.buf):find("1 session (s: all)", 1, true))
@@ -644,7 +759,7 @@ describe("review.ui sessions", function()
     local prev = vim.ui.select
     vim.ui.select = function(items, _, cb)
       for _, item in ipairs(items) do
-        if item.src.provider == "claude" then
+        if item.src and item.src.provider == "claude" then
           return cb(item)
         end
       end
@@ -1401,10 +1516,11 @@ describe("review.ui layouts", function()
     assert.are.same(ui.tabpage, vim.api.nvim_get_current_tabpage())
     assert.is_true(ui.owns_tab)
     assert.are.same(origin, ui.origin_tab)
-    -- the panes are real windows there, only the status bar stays floating
+    -- every pane is a real window, so none can cover the command line
     assert.are.same("", vim.api.nvim_win_get_config(ui.sidebar.win).relative)
     assert.are.same("", vim.api.nvim_win_get_config(ui.main.win).relative)
-    assert.are.same("editor", vim.api.nvim_win_get_config(ui.footer.win).relative)
+    assert.are.same("", vim.api.nvim_win_get_config(ui.footer.win).relative)
+    assert.are.same(1, vim.api.nvim_win_get_height(ui.footer.win))
     assert.is_true(vim.api.nvim_win_get_width(ui.main.win) > vim.api.nvim_win_get_width(ui.sidebar.win))
   end)
 
@@ -1426,6 +1542,20 @@ describe("review.ui layouts", function()
     ui:close()
     assert.are.same(0, panes())
     assert.are.same(before, #vim.api.nvim_list_wins())
+  end)
+
+  it("keeps quickfix visible in the review tab", function()
+    local ui = Review.open({ cwd = fx.cwd, layout = "tab" })
+    vim.fn.setqflist({}, "r", { items = { { filename = fx.file, lnum = 1, text = "review result" } } })
+    vim.cmd.copen()
+    local qwin = vim.fn.getqflist({ winid = 0 }).winid
+    assert.is_true(qwin ~= 0)
+    assert.are_not.same(ui.footer.win, qwin)
+    assert.are.same("", vim.api.nvim_win_get_config(qwin).relative)
+    UI.fit_quickfix(ui)
+    assert.is_true(vim.api.nvim_win_get_height(qwin) >= 5)
+    assert.are.same(1, vim.api.nvim_win_get_height(ui.footer.win))
+    vim.cmd.cclose()
   end)
 
   it("sends from the tabpage the review was opened on", function()
@@ -1464,7 +1594,11 @@ describe("review.ui layouts", function()
       local ui = Review.open({ cwd = fx.cwd, layout = mode })
       assert.is_true(pcall(UI.resize, ui), mode)
       local footer = vim.api.nvim_win_get_config(ui.footer.win)
-      assert.is_true(footer.row + 1 <= vim.o.lines - vim.o.cmdheight, mode)
+      if mode == "float" then
+        assert.is_true(footer.row + 1 <= vim.o.lines - vim.o.cmdheight, mode)
+      else
+        assert.are.same("", footer.relative)
+      end
       ui:close()
     end
   end)

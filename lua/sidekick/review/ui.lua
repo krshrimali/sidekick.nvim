@@ -261,8 +261,9 @@ local function set_winbar(win, label)
   end
 end
 
---- The footer is a pinned float in every layout: it always belongs at the
---- bottom of the screen, and a real window there would fight the split tree.
+--- Floating footer config, used only by callers that need an editor-relative
+--- status row. Split and tab layouts use a real split so it cannot cover the
+--- command line or quickfix windows when `cmdheight=0`.
 ---@return vim.api.keyset.win_config
 function M.footer_config()
   local total_h = math.max(vim.o.lines - vim.o.cmdheight, 4)
@@ -340,7 +341,15 @@ function UI:layout_splits(mode)
   set_winbar(self.sidebar.win, "turns")
   set_winbar(self.main.win, "review")
 
-  self.footer.win = vim.api.nvim_open_win(self.footer.buf, false, M.footer_config())
+  -- A real one-line footer participates in the split tree. Unlike an
+  -- editor-relative float, it yields when the command line appears and lets a
+  -- quickfix window open visibly above it.
+  vim.cmd("noautocmd botright 1split")
+  self.footer.win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(self.footer.win, self.footer.buf)
+  vim.wo[self.footer.win].winfixheight = true
+  vim.wo[self.footer.win].statusline = ""
+  vim.api.nvim_set_current_win(self.sidebar.win)
 end
 
 --- Create the three panes according to `review.layout`.
@@ -358,6 +367,9 @@ function UI:open_windows()
   setup_win(self.sidebar.win)
   setup_win(self.main.win)
   setup_win(self.footer.win, { cursorline = false })
+  if self.layout ~= "float" then
+    pcall(vim.api.nvim_win_set_height, self.footer.win, 1)
+  end
 end
 
 --------------------------------------------------------------------------------
@@ -935,7 +947,7 @@ end
 --- Describe a session the way you would recognise it: what you asked it, when,
 --- and how much it did — not its uuid.
 ---@param src sidekick.review.Source
----@param opts? {current?:string}
+---@param opts? {current?:string, cwd?:boolean}
 ---@return string label, sidekick.review.Transcript?
 function M.describe(src, opts)
   opts = opts or {}
@@ -965,41 +977,255 @@ function M.describe(src, opts)
     when
   )
 
-  return ("%s %-11s  %-52s  %s"):format(
+  local directory = opts.cwd and ("  %s"):format(vim.fn.fnamemodify(src.cwd, ":~")) or ""
+  return ("%s %-11s  %-52s  %s%s"):format(
     src.session == opts.current and "●" or " ",
     provider and provider.label or src.provider,
     #title > 52 and (title:sub(1, 51) .. "…") or title,
-    meta
+    meta,
+    directory
   ),
     ok and tr or nil
 end
 
+local session_sort_modes = { "newest", "oldest", "directory", "provider" }
+
+---@class sidekick.review.SessionControls
+---@field directory? string exact project directory
+---@field provider? string exact provider name
+---@field sort string
+
+---@param sources sidekick.review.Source[]
+---@param controls sidekick.review.SessionControls
+---@param current? string
+---@return {src:sidekick.review.Source, label:string}[]
+function M.session_items(sources, controls, current)
+  local filtered = vim.tbl_filter(function(src)
+    return (not controls.directory or src.cwd == controls.directory)
+      and (not controls.provider or src.provider == controls.provider)
+  end, sources)
+  table.sort(filtered, function(a, b)
+    if controls.sort == "oldest" then
+      return a.mtime < b.mtime
+    elseif controls.sort == "directory" and a.cwd ~= b.cwd then
+      return a.cwd < b.cwd
+    elseif controls.sort == "provider" and a.provider ~= b.provider then
+      return a.provider < b.provider
+    end
+    return a.mtime > b.mtime
+  end)
+  return vim.tbl_map(function(src)
+    return { src = src, label = (M.describe(src, { current = current, cwd = true })) }
+  end, filtered)
+end
+
+--- Put session picker results in quickfix. The quickfix context retains the
+--- session identity, so opening an entry opens the review instead of its JSONL.
+---@param items {src:sidekick.review.Source, label:string}[]
+function M.sessions_quickfix(items)
+  local sources, entries = {}, {}
+  for _, item in ipairs(items) do
+    if item.src then
+      sources[#sources + 1] = item.src
+      entries[#entries + 1] = {
+        lnum = 1,
+        col = 1,
+        text = item.label,
+      }
+    end
+  end
+  if #entries == 0 then
+    Util.warn("sidekick.review: select a session before sending it to quickfix")
+    return
+  end
+  vim.fn.setqflist({}, " ", {
+    title = "Sidekick review sessions",
+    items = entries,
+    context = { sidekick_review_sessions = sources },
+  })
+  vim.cmd.copen()
+  M.fit_quickfix(M.current)
+  vim.schedule(function()
+    M.fit_quickfix(M.current)
+  end)
+  local buf = vim.api.nvim_get_current_buf()
+  vim.keymap.set("n", "<CR>", function()
+    local info = vim.fn.getqflist({ idx = 0, context = 0 })
+    local sessions = type(info.context) == "table" and info.context.sidekick_review_sessions or nil
+    local src = sessions and sessions[info.idx] or nil
+    if not src then
+      return
+    end
+    vim.cmd.cclose()
+    require("sidekick.review").open({ cwd = src.cwd, session = src.session })
+  end, { buffer = buf, silent = true, desc = "Open Sidekick review session" })
+end
+
+--- Keep auxiliary windows usable in split/tab reviews. Split equalization and
+--- bqf's auto-resize can otherwise grow the one-line footer while shrinking a
+--- short quickfix list to a practically invisible single row.
+---@param ui? sidekick.review.UI
+function M.fit_quickfix(ui)
+  if not ui or ui.closed or ui.layout == "float" then
+    return
+  end
+  if vim.api.nvim_win_is_valid(ui.footer.win) then
+    pcall(vim.api.nvim_win_set_height, ui.footer.win, 1)
+  end
+  local qwin = vim.fn.getqflist({ winid = 0 }).winid
+  if qwin ~= 0 and vim.api.nvim_win_is_valid(qwin) then
+    local size = vim.fn.getqflist({ size = 0 }).size
+    local height = math.min(math.max(size, 5), math.max(math.floor(vim.o.lines * 0.3), 5))
+    pcall(vim.api.nvim_win_set_height, qwin, height)
+    if vim.api.nvim_win_is_valid(ui.footer.win) then
+      pcall(vim.api.nvim_win_set_height, ui.footer.win, 1)
+    end
+  end
+end
+
+---@param controls sidekick.review.SessionControls
+---@return string
 --- Choose among every session recorded for a project.
 ---
 --- A directory collects them over time: earlier `claude` runs, a `codex` run, a
 --- resumed session. Only the most recent opens by default, so this is how you
 --- reach the rest — including how you review a Codex turn when a Claude
 --- session happens to be newer.
----@param opts {cwd:string, sources?:sidekick.review.Source[], current?:string, on_choice:fun(src:sidekick.review.Source)}
+---@param opts {cwd:string, all?:boolean, sources?:sidekick.review.Source[], current?:string, on_choice:fun(src:sidekick.review.Source), controls?:sidekick.review.SessionControls}
 function M.select_session(opts)
-  local sources = opts.sources or Model.sessions(opts.cwd)
+  local sources = opts.sources or Model.sessions(opts.cwd, { all = opts.all })
+  sources = vim.tbl_filter(function(src)
+    return type(src.cwd) == "string"
+      and src.cwd ~= ""
+      and type(src.provider) == "string"
+      and src.provider ~= ""
+      and type(src.session) == "string"
+      and src.session ~= ""
+  end, sources)
   if #sources == 0 then
     Util.warn("sidekick.review: no sessions recorded for " .. vim.fn.fnamemodify(opts.cwd, ":~"))
     return
   end
 
-  local items = {} ---@type {src:sidekick.review.Source, label:string}[]
-  for _, src in ipairs(sources) do
-    items[#items + 1] = { src = src, label = (M.describe(src, { current = opts.current })) }
+  local controls = opts.controls or { sort = "newest" }
+  local directory_label = controls.directory and vim.fn.fnamemodify(controls.directory, ":~") or "All directories"
+  local provider_label = controls.provider or "All providers"
+  local items = {
+    { control = "directory", label = ("› Directory   %s"):format(directory_label) },
+    { control = "provider", label = ("› Provider    %s"):format(provider_label) },
+    { control = "sort", label = ("› Sort        %s"):format(controls.sort) },
+  }
+  vim.list_extend(items, M.session_items(sources, controls, opts.current))
+
+  local snacks = {
+    -- Session files are JSONL transcripts, not useful picker previews. More
+    -- importantly, Snacks' default file preview errors for the filter rows and
+    -- can remain floating over the review after <C-q> opens quickfix.
+    layout = { preview = false },
+    actions = {
+      sidekick_review_qflist = function(picker)
+        local selected = {} ---@type {src:sidekick.review.Source, label:string}[]
+        for _, item in ipairs(picker:selected({ fallback = true })) do
+          if item.item and item.item.src then
+            selected[#selected + 1] = item.item
+          end
+        end
+        picker:close()
+        vim.schedule(function()
+          M.sessions_quickfix(selected)
+        end)
+      end,
+    },
+    win = {
+      input = { keys = { ["<c-q>"] = { "sidekick_review_qflist", mode = { "n", "i" } } } },
+      list = { keys = { ["<c-q>"] = "sidekick_review_qflist" } },
+    },
+  } ---@type snacks.picker.Config
+
+  local function reopen()
+    local next_opts = vim.tbl_extend("force", opts, { sources = sources, controls = controls })
+    M.select_session(next_opts)
+  end
+
+  local function choose_directory()
+    local seen = {} ---@type table<string, boolean>
+    local choices = { { label = "All directories" } }
+    for _, src in ipairs(sources) do
+      if not seen[src.cwd] then
+        seen[src.cwd] = true
+        choices[#choices + 1] = { directory = src.cwd, label = vim.fn.fnamemodify(src.cwd, ":~") }
+      end
+    end
+    table.sort(choices, function(a, b)
+      return not a.directory or (b.directory ~= nil and a.label < b.label)
+    end)
+    vim.ui.select(choices, {
+      prompt = "Directory:",
+      format_item = function(choice)
+        return (choice.directory == controls.directory and "● " or "  ") .. choice.label
+      end,
+    }, function(choice)
+      if choice then
+        controls.directory = choice.directory
+      end
+      reopen()
+    end)
+  end
+
+  local function choose_sort()
+    vim.ui.select(session_sort_modes, {
+      prompt = "Sort sessions by:",
+      format_item = function(value)
+        return (value == controls.sort and "● " or "  ") .. value
+      end,
+    }, function(value)
+      if value then
+        controls.sort = value
+      end
+      reopen()
+    end)
+  end
+
+  local function choose_provider()
+    local seen = {} ---@type table<string, boolean>
+    local choices = { { label = "All providers" } }
+    for _, src in ipairs(sources) do
+      if not seen[src.provider] then
+        seen[src.provider] = true
+        local provider = Provider.get(src.provider)
+        choices[#choices + 1] = { provider = src.provider, label = provider and provider.label or src.provider }
+      end
+    end
+    table.sort(choices, function(a, b)
+      return not a.provider or (b.provider ~= nil and a.label < b.label)
+    end)
+    vim.ui.select(choices, {
+      prompt = "Provider:",
+      format_item = function(choice)
+        return (choice.provider == controls.provider and "● " or "  ") .. choice.label
+      end,
+    }, function(choice)
+      if choice then
+        controls.provider = choice.provider
+      end
+      reopen()
+    end)
   end
 
   vim.ui.select(items, {
-    prompt = ("Sessions in %s"):format(vim.fn.fnamemodify(opts.cwd, ":~")),
+    prompt = "Sessions — select a filter or session:",
     format_item = function(item)
       return item.label
     end,
+    snacks = snacks,
   }, function(choice)
-    if choice then
+    if choice and choice.control == "directory" then
+      choose_directory()
+    elseif choice and choice.control == "provider" then
+      choose_provider()
+    elseif choice and choice.control == "sort" then
+      choose_sort()
+    elseif choice then
       opts.on_choice(choice.src)
     end
   end)
@@ -1010,7 +1236,7 @@ end
 --- The default is the whole repository. Narrowing is for when a project has
 --- accumulated enough history that one session's turns are all you care about.
 function UI:pick_session()
-  local sources = self.sessions or {}
+  local sources = self.session and (self.sessions or {}) or Model.sessions(nil, { all = true })
   if #sources <= 1 then
     Util.info("sidekick.review: this is the only session for " .. vim.fn.fnamemodify(self.cwd, ":~"))
     return
@@ -1028,9 +1254,18 @@ function UI:pick_session()
   M.select_session({
     cwd = self.cwd,
     sources = sources,
+    all = true,
     current = self.session,
     on_choice = function(src)
       if self.closed then
+        return
+      end
+      if src.cwd ~= self.cwd then
+        local layout = self.layout
+        self:close()
+        vim.schedule(function()
+          require("sidekick.review").open({ cwd = src.cwd, session = src.session, layout = layout })
+        end)
         return
       end
       self.session = src.session
@@ -1185,7 +1420,8 @@ function UI:help()
     "under the comment they answer. The transcript is watched, so answers appear",
     "on their own; R forces a refresh.",
     "",
-    "  s           narrow to one session, or widen back to the whole project",
+    "  s           open sessions; Directory, Provider and Sort are visible rows",
+    "              select a filter row with <CR>, or a session to open it",
     "              (`:Sidekick review sessions` picks one without opening first)",
     "  R           refresh from the transcript",
     "  q / <Esc>   close",
@@ -1607,6 +1843,10 @@ function M.open(opts)
         self.focus = "sidebar"
       elseif win == self.main.win then
         self.focus = "main"
+      elseif vim.bo[vim.api.nvim_win_get_buf(win)].buftype == "quickfix" then
+        vim.schedule(function()
+          M.fit_quickfix(self)
+        end)
       end
     end,
   })
@@ -1632,13 +1872,9 @@ function M.resize(self)
       end
     end
   else
-    -- splits reflow on their own; only the sidebar width and the pinned footer
-    -- need to be put back
+    -- real splits reflow on their own; only the sidebar width needs restoring
     if vim.api.nvim_win_is_valid(self.sidebar.win) then
       pcall(vim.api.nvim_win_set_width, self.sidebar.win, geo.sidebar)
-    end
-    if vim.api.nvim_win_is_valid(self.footer.win) then
-      pcall(vim.api.nvim_win_set_config, self.footer.win, M.footer_config())
     end
   end
   self:render({ keep_cursor = true })

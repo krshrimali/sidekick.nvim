@@ -1022,9 +1022,10 @@ landed in is rarely what you remember. So the sidebar groups them, newest first:
 `<CR>` on a group folds it. Every session in view is watched, so a turn landing
 in any of them shows up on its own.
 
-Press `s` to **narrow** to a single session when a project has enough history
-that one run is all you care about; `s` again widens back. The picker labels
-each session by its opening prompt rather than its id:
+Press `s` to open the visible **sessions/filter** action and narrow to a single
+session when there is enough history that one run is all you care about; `s`
+again widens back. The picker labels each session by its opening prompt rather
+than its id:
 
 ```text
 ● Claude Code  how do I view all sessions?      6 turns · 31 files · Aug 15 23:39
@@ -1032,6 +1033,11 @@ each session by its opening prompt rather than its id:
 ```
 
 `:Sidekick review sessions` opens that picker without opening a review first.
+That picker searches sessions from every recorded project directory. Directory,
+Provider, and Sort appear as selectable rows at the top: move to one and press
+`<Enter>` to change it. Normal typing fuzzy-filters the visible session labels by
+prompt, provider, or path; no extra filter keymaps are required. `<C-q>` sends
+the selected session results to quickfix, where `<Enter>` opens that review.
 
 ```lua
 require("sidekick.review").sessions()               --> every recorded session

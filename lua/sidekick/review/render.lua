@@ -1101,7 +1101,7 @@ end
 function M.footer(ctx)
   local pending = ctx.store:pending_count()
   local left = pending > 0 and ("%s%d pending"):format(M.icons.comment, pending) or "no pending comments"
-  local right = "c comment · r reply · S submit · x viewed · g? help · q quit"
+  local right = "s sessions/filter · c comment · S submit · g? help · q quit"
   local gap = math.max(ctx.width - vim.fn.strdisplaywidth(left) - vim.fn.strdisplaywidth(right) - 2, 1)
   local text = " " .. left .. string.rep(" ", gap) .. right
   return {

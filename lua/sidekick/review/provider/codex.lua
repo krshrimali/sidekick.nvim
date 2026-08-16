@@ -130,7 +130,7 @@ function M.clear_cache()
   moved = {}
 end
 
----@param cwd string
+---@param cwd? string
 ---@return sidekick.review.Source[]
 function M.sources(cwd)
   local root = M.sessions_dir()
@@ -149,13 +149,14 @@ function M.sources(cwd)
       -- of the session_meta on the first line
       local entry = Transcript.first_entry(file, stat)
       local meta = entry and entry.payload or nil
-      local match = Transcript.cwd_of(file, stat) == cwd
+      local found = Transcript.cwd_of(file, stat)
+      local match = cwd == nil and found ~= nil or found == cwd
 
       -- a session can move between workspaces mid-run, recording the new one in
       -- a `turn_context`. Reading the whole file to find that would undo the
       -- cheap scan, so only look when the header did not already match and the
       -- project is plausibly in there at all.
-      if not match and M.moved_into(file, cwd) then
+      if cwd and not match and M.moved_into(file, cwd) then
         match = true
       end
 
@@ -164,7 +165,7 @@ function M.sources(cwd)
         ret[#ret + 1] = {
           file = file,
           session = type(meta.id) == "string" and meta.id or name,
-          cwd = cwd,
+          cwd = found or cwd,
           provider = M.name,
           mtime = stat.mtime.sec + stat.mtime.nsec / 1e9,
           size = stat.size,

@@ -21,7 +21,7 @@ function M.projects_dir()
 end
 
 --- Claude Code encodes a cwd by replacing every non alphanumeric char with `-`.
----@param cwd string
+---@param cwd? string
 ---@return string
 function M.encode(cwd)
   return (vim.fs.normalize(cwd):gsub("[^%w]", "-"))
@@ -95,12 +95,12 @@ local function collect(dir, cwd, out, check_cwd)
         local found = Transcript.cwd_of(file, stat)
         -- a transcript too short to have recorded a cwd is accepted only in
         -- the directory that already claims to be this project
-        local ok = found == cwd or (found == nil and not check_cwd)
+        local ok = (cwd == nil and found ~= nil) or found == cwd or (found == nil and not check_cwd)
         if ok then
           out[#out + 1] = {
             file = file,
             session = name:sub(1, -7),
-            cwd = cwd,
+            cwd = found or cwd,
             provider = M.name,
             mtime = stat.mtime.sec + stat.mtime.nsec / 1e9,
             size = stat.size,
@@ -111,21 +111,21 @@ local function collect(dir, cwd, out, check_cwd)
   end
 end
 
----@param cwd string
+---@param cwd? string
 ---@return sidekick.review.Source[]
 function M.sources(cwd)
   local root = M.projects_dir()
   local ret = {} ---@type sidekick.review.Source[]
 
-  local encoded = root .. "/" .. M.encode(cwd)
-  if vim.uv.fs_stat(encoded) then
+  local encoded = cwd and (root .. "/" .. M.encode(cwd)) or nil
+  if encoded and vim.uv.fs_stat(encoded) then
     -- the encoding is lossy -- `/a_b` and `/a-b` both become `-a-b` -- so even
     -- the directory whose name matches has to have its transcripts checked, or
     -- one project would be shown another's sessions
     pcall(collect, encoded, cwd, ret, true)
   end
 
-  if #ret == 0 and vim.uv.fs_stat(root) then
+  if (cwd == nil or #ret == 0) and vim.uv.fs_stat(root) then
     -- nothing under the expected name: the cwd may still be recorded inside a
     -- transcript filed under a differently-encoded directory
     pcall(function()

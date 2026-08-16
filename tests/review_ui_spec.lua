@@ -592,6 +592,44 @@ describe("review.ui sessions", function()
     assert.is_false(select_opts.snacks.layout.preview)
   end)
 
+  it("exports every filtered session to quickfix when none are explicitly selected", function()
+    add_codex()
+    local select_opts, exported
+    local prev_select = vim.ui.select
+    local prev_quickfix = UI.sessions_quickfix
+    vim.ui.select = function(_, opts)
+      select_opts = opts
+    end
+    UI.sessions_quickfix = function(items)
+      exported = items
+    end
+    UI.select_session({ cwd = fx.cwd, sources = Review.sessions(fx.cwd), on_choice = function() end })
+
+    local filtered = {
+      { item = { control = "provider" } },
+      { item = { src = { session = "one" }, label = "one" } },
+      { item = { src = { session = "two" }, label = "two" } },
+    }
+    select_opts.snacks.actions.sidekick_review_qflist({
+      selected = function()
+        return {}
+      end,
+      items = function()
+        return filtered
+      end,
+      close = function() end,
+    })
+    vim.wait(1000, function()
+      return exported ~= nil
+    end)
+    UI.sessions_quickfix = prev_quickfix
+    vim.ui.select = prev_select
+
+    assert.are.same({ "one", "two" }, vim.tbl_map(function(item)
+      return item.src.session
+    end, exported))
+  end)
+
   it("applies a visible provider filter and returns to the sessions", function()
     add_codex()
     local final, main_count

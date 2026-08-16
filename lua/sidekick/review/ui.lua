@@ -1125,7 +1125,13 @@ function M.select_session(opts)
     actions = {
       sidekick_review_qflist = function(picker)
         local selected = {} ---@type {src:sidekick.review.Source, label:string}[]
-        for _, item in ipairs(picker:selected({ fallback = true })) do
+        local picker_items = picker:selected()
+        -- Match Snacks' normal qflist semantics: explicit multi-selection wins;
+        -- otherwise export every item left by the current text filter.
+        if #picker_items == 0 then
+          picker_items = picker:items()
+        end
+        for _, item in ipairs(picker_items) do
           if item.item and item.item.src then
             selected[#selected + 1] = item.item
           end

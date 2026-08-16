@@ -59,6 +59,8 @@ M.icons = {
   unviewed   = " ",
   comment    = " ",
   reply      = "↳ ",
+  you        = "▌",
+  agent      = "▌",
   threads    = "󰭻 ",
   rollup     = "󰦒 ",
   pending    = "● ",
@@ -67,6 +69,7 @@ M.icons = {
   tool       = " ",
   failed     = "✗ ",
   thinking   = " ",
+  aside      = "╎ ",
   pending_turn = "󱎫 ",
   approved   = "✓",
   changes    = "✗",
@@ -642,17 +645,32 @@ function M.response(ctx, turn)
   add(" " .. meta, { { 0, -1, "SidekickReviewDim" } }, { kind = "header", turn = turn.id })
   add(string.rep("─", W), { { 0, -1, "SidekickReviewSep" } }, { kind = "blank" })
 
-  -- the prompt reads like a PR description
+  -- the response view reads as a conversation, so say who is speaking: the
+  -- prompt is yours, everything after it is the agent's. Without labels the
+  -- prompt was indistinguishable from a review comment, which shares a gutter.
+  local you = M.icons.you .. " you"
+  add(you, { { 0, 1, "SidekickReviewAuthorYou" }, { 1, -1, "SidekickReviewAuthorYou" } }, {
+    kind = "prompt",
+    turn = turn.id,
+  })
   for i, l in ipairs(vim.split(turn.prompt, "\n", { plain = true })) do
     if i > 40 then
-      add("│ …", { { 0, -1, "SidekickReviewDim" } }, { kind = "prompt", turn = turn.id })
+      add(M.icons.you .. " …", { { 0, -1, "SidekickReviewDim" } }, { kind = "prompt", turn = turn.id })
       break
     end
-    add("│ " .. l, { { 0, 2, "SidekickReviewCommentBorder" }, { 2, -1, "SidekickReviewPrompt" } }, {
-      kind = "prompt",
-      turn = turn.id,
-    })
+    add(M.icons.you .. " " .. l, {
+      { 0, #M.icons.you, "SidekickReviewAuthorYou" },
+      { #M.icons.you, -1, "SidekickReviewPrompt" },
+    }, { kind = "prompt", turn = turn.id })
   end
+  add("", nil, { kind = "blank" })
+
+  local provider = Provider.get(turn.provider)
+  local agent = M.icons.agent .. " " .. (provider and provider.label or "agent")
+  add(agent, { { 0, 1, "SidekickReviewAuthorAgent" }, { 1, -1, "SidekickReviewAuthorAgent" } }, {
+    kind = "header",
+    turn = turn.id,
+  })
   add("", nil, { kind = "blank" })
 
   for bi, block in ipairs(turn.blocks) do
@@ -676,14 +694,16 @@ function M.response(ctx, turn)
     elseif block.kind == "thinking" and block.text then
       local key = ("b%d:1"):format(bi)
       if ctx.show_thinking then
-        add(M.icons.thinking .. "thinking", { { 0, -1, "SidekickReviewThinking" } }, {
+        -- an aside, not something the agent said: mark every line, so it
+        -- reads as thinking even where colour does not come through
+        add(M.icons.aside .. M.icons.thinking .. "thinking", { { 0, -1, "SidekickReviewThinking" } }, {
           kind = "text",
           turn = turn.id,
           anchor_key = key,
           anchor = "thinking",
         })
         for li, l in ipairs(vim.split(block.text, "\n", { plain = true })) do
-          add("  " .. l, { { 0, -1, "SidekickReviewThinking" } }, {
+          add(M.icons.aside .. l, { { 0, -1, "SidekickReviewThinking" } }, {
             kind = "text",
             turn = turn.id,
             anchor_key = ("b%d:%d"):format(bi, li),
@@ -693,7 +713,7 @@ function M.response(ctx, turn)
         add("", nil, { kind = "blank" })
       else
         local n = select(2, block.text:gsub("\n", "")) + 1
-        local label = ("%sthinking (%d lines, `t` to expand)"):format(M.icons.thinking, n)
+        local label = ("%s%sthinking (%d lines, `T` to expand)"):format(M.icons.aside, M.icons.thinking, n)
         add(label, { { 0, -1, "SidekickReviewDim" } }, {
           kind = "text",
           turn = turn.id,

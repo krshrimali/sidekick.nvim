@@ -929,6 +929,122 @@ describe("review marks", function()
   end)
 end)
 
+describe("review legibility", function()
+  local fx ---@type sidekick.test.ReviewFixture
+  local restore_cli, restore_notify
+
+  before_each(function()
+    fx = Fixture.setup()
+    _, restore_cli = Fixture.stub_cli()
+    _, restore_notify = Fixture.stub_notify()
+  end)
+
+  after_each(function()
+    UI.close()
+    restore_cli()
+    restore_notify()
+    fx.cleanup()
+  end)
+
+  ---@return sidekick.review.UI
+  local function furnished()
+    local ui = Review.open({ cwd = fx.cwd })
+    Store.get(fx.cwd):add({
+      turn = ui.sel_turn,
+      target = "response",
+      anchor_key = "b2:1",
+      anchor = { "Switching" },
+      body = "please add a test",
+    })
+    ui.show_thinking = true
+    ui:render()
+    return ui
+  end
+
+  it("says who is speaking", function()
+    -- the prompt and the agent's prose sat unlabelled next to each other
+    local ui = furnished()
+    local out = text(ui.main.buf)
+    assert.is_not_nil(out:find("▌ you", 1, true))
+    assert.is_not_nil(out:find("▌ Claude Code", 1, true))
+  end)
+
+  it("does not let a prompt look like a comment", function()
+    -- both used to be drawn with the same `│` gutter
+    local ui = furnished()
+
+    ---@param kind string
+    ---@param needle string
+    ---@return string?
+    local function gutter(kind, needle)
+      for _, l in ipairs(ui.main.lines) do
+        if l.item and l.item.kind == kind and l.text:find(needle, 1, true) then
+          return vim.fn.strcharpart(l.text, 0, 1)
+        end
+      end
+    end
+
+    local prompt = gutter("prompt", "Use vim.notify")
+    local comment = gutter("comment", "please add a test")
+    assert.are.same("▌", prompt)
+    assert.are.same("│", comment)
+    assert.are_not.same(prompt, comment)
+  end)
+
+  it("marks thinking as an aside", function()
+    local ui = furnished()
+    assert.is_not_nil(text(ui.main.buf):find("╎ print() is not great", 1, true))
+  end)
+
+  it("gives each element its own gutter glyph", function()
+    local seen = {}
+    for name, glyph in pairs({ prompt = "▌", thinking = "╎", thread = "│", fence = "▏" }) do
+      assert.is_nil(seen[glyph], name .. " reuses the glyph of " .. tostring(seen[glyph]))
+      seen[glyph] = name
+    end
+  end)
+
+  it("separates additions, deletions and context in a diff", function()
+    local ui = furnished()
+    ui.sel_key = fx.file
+    ui:render()
+
+    local sign = {}
+    for _, l in ipairs(ui.main.lines) do
+      local it = l.item
+      if it and it.kind == "diff" then
+        -- a diff item carries `lnum` for the new side, `old_lnum` for the old
+        local at = l.text:sub(11, 11)
+        if it.old_lnum and not it.lnum then
+          sign.del = at
+        elseif it.lnum and not it.old_lnum then
+          sign.add = at
+        elseif it.lnum and it.old_lnum then
+          sign.context = at
+        end
+      end
+    end
+    assert.are.same("+", sign.add)
+    assert.are.same("-", sign.del)
+    assert.are.same(" ", sign.context)
+  end)
+
+  it("uses only highlight groups that exist", function()
+    -- `set_hl` normally runs from a scheduled callback
+    Config.set_hl()
+    local ui = furnished()
+    for _, pane in ipairs({ ui.sidebar, ui.main, ui.footer }) do
+      for _, l in ipairs(pane.lines) do
+        for _, hl in ipairs(l.hl or {}) do
+          if hl[3]:find("^Sidekick") then
+            assert.is_false(vim.tbl_isempty(vim.api.nvim_get_hl(0, { name = hl[3] })), hl[3] .. " is not defined")
+          end
+        end
+      end
+    end
+  end)
+end)
+
 describe("review keymaps", function()
   local fx ---@type sidekick.test.ReviewFixture
   local restore_cli, restore_notify, notices

@@ -369,7 +369,6 @@ function M.set_hl()
     ReviewCommentBorder = "Delimiter",
     ReviewReply = "Normal",
     ReviewReplyHead = "DiagnosticInfo",
-    ReviewPrompt = "Comment",
     ReviewQuote = "Comment",
     ReviewThinking = "Comment",
     ReviewTool = "Function",
@@ -393,7 +392,8 @@ function M.set_hl()
     -- threads
     ReviewThreadCollapsed = "Comment",
     ReviewAuthorYou = "Special",
-    ReviewAuthorAgent = "DiagnosticInfo",
+    ReviewAuthorAgent = "Function",
+    ReviewPrompt = "Comment",
   }
   for from, to in pairs(links) do
     vim.api.nvim_set_hl(0, "Sidekick" .. from, { link = to, default = true })

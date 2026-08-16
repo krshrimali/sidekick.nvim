@@ -959,6 +959,19 @@ Sidekick Review ~
   `Threads`, and every changed file with `+`/`-` counts, a viewed mark, and a
   comment count. New files are marked, deleted ones say `deleted` rather than
   reporting an empty change.
+
+Each kind of content carries its own marker, so you can tell at a glance who
+said what — and it survives a theme with no colour:
+
+| | |
+|---|---|
+| `▌ you` | what you asked |
+| `▌ Claude Code` | the agent answering |
+| `╎ ` | thinking, an aside rather than something it said |
+| `╭ ● [c1] … draft` | a review comment, tagged and with its state |
+| `│ you` / `│ ↳ claude` | who wrote each message inside a thread |
+| `▏ lua ╴╴╴` | a fenced code block |
+| ` Edit` / `✗ Bash` | a tool call, and one that failed |
 - **Review pane** — the rendered response (markdown headings, lists, quotes and
   syntax-highlighted code fences, with tool calls on one line each), a unified
   diff with real line numbers, or the threads view.

@@ -94,6 +94,42 @@ local function walk(dir, out)
   return ok
 end
 
+--- Whether a rollout later moved into `cwd` via a `turn_context`.
+---
+--- Cached per file, like the header lookup: a session that changed workspace
+--- is uncommon, and re-reading every past rollout on every refresh is exactly
+--- what the header scan exists to avoid.
+---@type table<string, {size:number, moved:table<string, boolean>}>
+local moved = {}
+
+---@param file string
+---@param cwd string
+---@return boolean
+function M.moved_into(file, cwd)
+  local stat = vim.uv.fs_stat(file)
+  local size = stat and stat.size or 0
+  local hit = moved[file]
+  if not hit or hit.size ~= size then
+    hit = { size = size, moved = {} }
+    -- one pass, collecting every workspace the session ever reported
+    for _, entry in ipairs(Transcript.parse(file)) do
+      if entry.type == "turn_context" and type(entry.payload) == "table" then
+        local c = entry.payload.cwd
+        if type(c) == "string" then
+          hit.moved[vim.fs.normalize(c)] = true
+        end
+      end
+    end
+    moved[file] = hit
+  end
+  return hit.moved[cwd] == true
+end
+
+--- Forget cached workspace moves. Used by tests.
+function M.clear_cache()
+  moved = {}
+end
+
 ---@param cwd string
 ---@return sidekick.review.Source[]
 function M.sources(cwd)
@@ -113,8 +149,17 @@ function M.sources(cwd)
       -- of the session_meta on the first line
       local entry = Transcript.first_entry(file, stat)
       local meta = entry and entry.payload or nil
-      local scwd = type(meta) == "table" and meta.cwd or nil
-      if type(scwd) == "string" and vim.fs.normalize(scwd) == cwd then
+      local match = Transcript.cwd_of(file, stat) == cwd
+
+      -- a session can move between workspaces mid-run, recording the new one in
+      -- a `turn_context`. Reading the whole file to find that would undo the
+      -- cheap scan, so only look when the header did not already match and the
+      -- project is plausibly in there at all.
+      if not match and M.moved_into(file, cwd) then
+        match = true
+      end
+
+      if match then
         local name = vim.fn.fnamemodify(file, ":t:r")
         ret[#ret + 1] = {
           file = file,
@@ -161,7 +206,7 @@ function M.build(src)
           local prompt = P.clean_prompt(text)
           if not is_noise(prompt) then
             current = P.turn({
-              id = p.id or ("turn-" .. (#turns + 1)),
+              id = p.id or P.fallback_id(src, #turns + 1),
               idx = #turns + 1,
               prompt = prompt,
               ts = ts,

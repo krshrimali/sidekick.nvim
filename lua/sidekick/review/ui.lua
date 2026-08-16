@@ -915,25 +915,19 @@ function UI:submit(opts)
   end
 
   local preview = Submit.render(comments, { turn = turn })
+  local agent = self:agent_label(turn)
   require("sidekick.review.comment").open({
-    title = ("Submit %d comment%s to Claude"):format(#comments, #comments == 1 and "" or "s"),
+    title = ("Submit %d comment%s to %s"):format(#comments, #comments == 1 and "" or "s", agent),
     body = preview or "",
     height = 0.6,
     submit_label = "send",
     on_submit = function(body)
-      body = clean(body)
-      if not body then
-        Util.warn("sidekick.review: empty message, nothing sent")
-        return
-      end
-      self:at_origin(function()
-        require("sidekick.cli").send({ msg = body, submit = true, focus = false })
+      self:deliver(body, turn, function()
+        for _, c in ipairs(comments) do
+          self.store:set_status(c.id, "sent")
+        end
+        Util.info(("sent %d comment%s to %s"):format(#comments, #comments == 1 and "" or "s", agent))
       end)
-      for _, c in ipairs(comments) do
-        self.store:set_status(c.id, "sent")
-      end
-      self:render({ keep_cursor = true })
-      Util.info(("sent %d comment%s to Claude"):format(#comments, #comments == 1 and "" or "s"))
     end,
   })
 end
@@ -1056,6 +1050,53 @@ function UI:pick_session()
   })
 end
 
+--- Human name of the agent that produced a turn.
+---@param turn? sidekick.review.Turn
+---@return string
+function UI:agent_label(turn)
+  local name = turn and turn.provider or (self.transcript and self.transcript.provider)
+  local provider = name and Provider.get(name) or nil
+  return provider and provider.label or "the agent"
+end
+
+--- Send a review message, recording it only once the CLI has taken it.
+---
+--- Marking comments as sent before delivery is confirmed loses them if the
+--- send fails or the user cancels: they leave the pending set and no longer
+--- show as awaiting an answer.
+---@param body? string
+---@param turn? sidekick.review.Turn
+---@param on_ok fun()
+function UI:deliver(body, turn, on_ok)
+  body = clean(body)
+  if not body then
+    Util.warn("sidekick.review: empty message, nothing sent")
+    return
+  end
+
+  -- a review of a Codex turn belongs to Codex, whatever happens to be attached
+  local name = turn and turn.provider or (self.transcript and self.transcript.provider)
+
+  self:at_origin(function()
+    require("sidekick.cli").send({
+      msg = body,
+      submit = true,
+      focus = false,
+      name = name,
+      on_send = function(ok, err)
+        if not ok then
+          Util.error("sidekick.review: could not deliver the review" .. (err and (": " .. tostring(err)) or ""))
+          return
+        end
+        on_ok()
+        if not self.closed then
+          self:render({ keep_cursor = true })
+        end
+      end,
+    })
+  end)
+end
+
 --- Submit a review carrying a verdict, the way a PR review does.
 ---
 --- Comment-only feedback and "this is blocking" read very differently to the
@@ -1079,22 +1120,15 @@ function UI:verdict(verdict)
     height = 0.6,
     submit_label = "send",
     on_submit = function(body)
-      body = clean(body)
-      if not body then
-        Util.warn("sidekick.review: empty message, nothing sent")
-        return
-      end
-      self:at_origin(function()
-        require("sidekick.cli").send({ msg = body, submit = true, focus = false })
+      self:deliver(body, turn, function()
+        for _, c in ipairs(comments) do
+          self.store:set_status(c.id, "sent")
+        end
+        if turn then
+          self.store:set_verdict(turn.id, verdict)
+        end
+        Util.info(("sidekick.review: %s sent"):format(label:lower()))
       end)
-      for _, c in ipairs(comments) do
-        self.store:set_status(c.id, "sent")
-      end
-      if turn then
-        self.store:set_verdict(turn.id, verdict)
-      end
-      self:render({ keep_cursor = true })
-      Util.info(("sidekick.review: %s sent"):format(label:lower()))
     end,
   })
 end

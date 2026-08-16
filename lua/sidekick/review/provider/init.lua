@@ -130,6 +130,18 @@ function M.make_title(prompt)
   return line ~= "" and line or "(empty prompt)"
 end
 
+--- An id for a turn whose entry carried none.
+---
+--- Turn ids key diffs, comments, viewed marks and verdicts, and the review
+--- shows every session in a project at once -- so a bare `turn-1` from two
+--- different sessions would have them overwrite each other.
+---@param src sidekick.review.Source
+---@param idx integer
+---@return string
+function M.fallback_id(src, idx)
+  return ("%s:turn-%d"):format(src.session, idx)
+end
+
 --- Start a new turn.
 ---@param opts {id:string, idx:integer, prompt:string, ts:number, src:sidekick.review.Source}
 ---@return sidekick.review.Turn

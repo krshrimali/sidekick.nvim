@@ -90,11 +90,12 @@ local function collect(dir, cwd, out, check_cwd)
       local file = dir .. "/" .. name
       local stat = vim.uv.fs_stat(file)
       if stat and stat.size > 0 then
-        local ok = true
-        if check_cwd then
-          local entry = Transcript.first_entry(file, stat)
-          ok = entry ~= nil and entry.cwd ~= nil and vim.fs.normalize(entry.cwd) == cwd
-        end
+        -- always verify: the directory name is a lossy encoding of the cwd,
+        -- so `/a_b` and `/a-b` land in the same one
+        local found = Transcript.cwd_of(file, stat)
+        -- a transcript too short to have recorded a cwd is accepted only in
+        -- the directory that already claims to be this project
+        local ok = found == cwd or (found == nil and not check_cwd)
         if ok then
           out[#out + 1] = {
             file = file,
@@ -118,13 +119,15 @@ function M.sources(cwd)
 
   local encoded = root .. "/" .. M.encode(cwd)
   if vim.uv.fs_stat(encoded) then
-    -- fast path: the encoded directory name matches exactly
-    pcall(collect, encoded, cwd, ret, false)
+    -- the encoding is lossy -- `/a_b` and `/a-b` both become `-a-b` -- so even
+    -- the directory whose name matches has to have its transcripts checked, or
+    -- one project would be shown another's sessions
+    pcall(collect, encoded, cwd, ret, true)
   end
 
   if #ret == 0 and vim.uv.fs_stat(root) then
-    -- slow path: encoding is lossy (`_` and `.` both map to `-`), so fall back
-    -- to reading the `cwd` recorded inside each transcript
+    -- nothing under the expected name: the cwd may still be recorded inside a
+    -- transcript filed under a differently-encoded directory
     pcall(function()
       for name, kind in vim.fs.dir(root) do
         if kind == "directory" then
@@ -149,7 +152,7 @@ function M.build(src)
       local is_prompt, prompt = user_prompt(entry)
       if is_prompt then
         current = P.turn({
-          id = entry.uuid or ("turn-" .. (#turns + 1)),
+          id = entry.uuid or P.fallback_id(src, #turns + 1),
           idx = #turns + 1,
           prompt = prompt,
           ts = P.to_time(entry.timestamp),

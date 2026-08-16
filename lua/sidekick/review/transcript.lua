@@ -105,6 +105,7 @@ local first_entries = {}
 --- Forget cached transcript identities. Used by tests.
 function M.clear_cache()
   first_entries = {}
+  cwds = {}
 end
 
 --- Decode just the first entry. Used to identify a transcript cheaply.
@@ -125,6 +126,44 @@ function M.first_entry(path, stat)
   local entry = line and decode(line) or nil
   first_entries[path] = { size = size, mtime = mtime, entry = entry }
   return entry
+end
+
+--- The project a transcript belongs to.
+---
+--- Not every format puts it on the first line: Claude opens with session
+--- metadata that carries no cwd, and only later entries have one. So scan a
+--- bounded prefix rather than trusting the first entry, and cache the answer
+--- -- which project a session belongs to never changes.
+---@type table<string, {size:number, mtime:number, cwd?:string}>
+local cwds = {}
+
+---@param path string
+---@param stat? uv.fs_stat.result
+---@return string?
+function M.cwd_of(path, stat)
+  stat = stat or vim.uv.fs_stat(path)
+  local size = stat and stat.size or 0
+  local mtime = stat and (stat.mtime.sec + stat.mtime.nsec / 1e9) or 0
+
+  local hit = cwds[path]
+  if hit and hit.size == size and hit.mtime == mtime then
+    return hit.cwd
+  end
+
+  local found ---@type string?
+  local data = M.read(path, 262144)
+  for line in (data or ""):gmatch("[^\n]+") do
+    local entry = decode(line)
+    -- Claude records it per entry; Codex puts it in the session header
+    local c = entry and (entry.cwd or (type(entry.payload) == "table" and entry.payload.cwd))
+    if type(c) == "string" and c ~= "" then
+      found = vim.fs.normalize(c)
+      break
+    end
+  end
+
+  cwds[path] = { size = size, mtime = mtime, cwd = found }
+  return found
 end
 
 --- Parse a transcript file into entries.

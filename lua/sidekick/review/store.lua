@@ -82,7 +82,7 @@ function M.get(cwd)
   end
   local self = setmetatable({
     cwd = cwd,
-    file = dir() .. "/" .. filename(cwd),
+    file = M.path_for(cwd),
   }, Store)
   self:load()
   cache[cwd] = self
@@ -98,7 +98,9 @@ end
 ---@param cwd string
 ---@return string
 function M.path_for(cwd)
-  return dir() .. "/" .. Transcript.encode(vim.fs.normalize(cwd)) .. ".json"
+  -- must agree with `filename()`; a divergence here silently makes every
+  -- persisted review undiscoverable after a restart
+  return dir() .. "/" .. filename(vim.fs.normalize(cwd))
 end
 
 --- Whether a project has review state on disk (or loaded in this session).

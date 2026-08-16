@@ -261,8 +261,13 @@ function M.setup(opts)
 
     require("sidekick.status").setup()
 
+    -- setup() can be called again with different options, so this has to be
+    -- able to turn marks off as well as on
+    local marks = require("sidekick.review.marks")
     if M.review.enabled ~= false and (M.review.signs or {}).enabled ~= false then
-      require("sidekick.review.marks").enable()
+      marks.enable()
+    else
+      marks.disable()
     end
 
     M.validate("cli.win.layout", { "float", "left", "bottom", "top", "right" })

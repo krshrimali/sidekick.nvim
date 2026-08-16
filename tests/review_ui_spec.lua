@@ -929,6 +929,105 @@ describe("review marks", function()
   end)
 end)
 
+describe("review delivery", function()
+  local fx ---@type sidekick.test.ReviewFixture
+  local restore_notify, notices, prev_cli
+
+  --- A CLI whose delivery outcome the test controls.
+  ---@param ok boolean
+  ---@return table[] sent
+  local function stub_cli(ok)
+    local sent = {}
+    prev_cli = prev_cli or package.loaded["sidekick.cli"]
+    package.loaded["sidekick.cli"] = setmetatable({
+      send = function(opts)
+        sent[#sent + 1] = opts
+        if opts.on_send then
+          opts.on_send(ok, ok and nil or "channel closed")
+        end
+      end,
+    }, {
+      __index = function()
+        return function() end
+      end,
+    })
+    return sent
+  end
+
+  before_each(function()
+    fx = Fixture.setup()
+    notices, restore_notify = Fixture.stub_notify()
+  end)
+
+  after_each(function()
+    UI.close()
+    if prev_cli then
+      package.loaded["sidekick.cli"] = prev_cli
+      prev_cli = nil
+    end
+    restore_notify()
+    fx.cleanup()
+  end)
+
+  it("keeps comments pending when delivery fails", function()
+    local sent = stub_cli(false)
+    local ui = Review.open({ cwd = fx.cwd })
+    Store.get(fx.cwd):add({ turn = ui.sel_turn, target = "response", anchor_key = "b1:1", anchor = {}, body = "fix" })
+    ui:render()
+
+    vim.api.nvim_set_current_win(ui.main.win)
+    local _, restore = Fixture.stub_composer(function(o)
+      return o.body
+    end)
+    feed("S")
+    restore()
+
+    assert.are.same(1, #sent)
+    -- a review marked sent before the CLI took it would silently disappear
+    assert.are.same("pending", Store.get(fx.cwd):find("c1").status)
+    local told = false
+    for _, n in ipairs(notices) do
+      told = told or n:find("could not deliver", 1, true) ~= nil
+    end
+    assert.is_true(told)
+  end)
+
+  it("does not record a verdict when delivery fails", function()
+    stub_cli(false)
+    local ui = Review.open({ cwd = fx.cwd })
+    Store.get(fx.cwd):add({ turn = ui.sel_turn, target = "response", anchor_key = "b1:1", anchor = {}, body = "blocking" })
+    ui:render()
+    vim.api.nvim_set_current_win(ui.main.win)
+    local _, restore = Fixture.stub_composer(function(o)
+      return o.body
+    end)
+    feed("gr")
+    restore()
+    assert.is_nil(Store.get(fx.cwd):verdict(ui.sel_turn))
+  end)
+
+  it("addresses the review to the agent whose turn it is", function()
+    local sent = stub_cli(true)
+    local ui = Review.open({ cwd = fx.cwd })
+    Store.get(fx.cwd):add({ turn = ui.sel_turn, target = "response", anchor_key = "b1:1", anchor = {}, body = "q" })
+    ui:render()
+
+    vim.api.nvim_set_current_win(ui.main.win)
+    local title
+    local _, restore = Fixture.stub_composer(function(o)
+      title = o.title
+      return o.body
+    end)
+    feed("S")
+    restore()
+
+    -- reviewing a Codex turn must not send the review to Claude
+    assert.are.same("claude", sent[1].name)
+    assert.is_not_nil(title:find("Claude Code", 1, true))
+    assert.are.same("sent", Store.get(fx.cwd):find("c1").status)
+  end)
+end)
+
 describe("review.ui verdicts", function()
   local fx ---@type sidekick.test.ReviewFixture
   local restore_cli, restore_notify, sent, notices

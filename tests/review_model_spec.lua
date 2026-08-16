@@ -311,6 +311,78 @@ describe("review.diff", function()
   end)
 end)
 
+describe("review project identity", function()
+  local Claude = require("sidekick.review.provider.claude")
+  local prev
+
+  after_each(function()
+    Claude.root = prev
+    Transcript.clear_cache()
+  end)
+
+  it("does not confuse projects whose encodings collide", function()
+    -- Claude's directory encoding maps every non-alphanumeric to `-`, so
+    -- `/x_y` and `/x-y` are filed together
+    local root = vim.fn.tempname()
+    local a, b = root .. "/x_y", root .. "/x-y"
+    prev = Claude.root
+    Claude.root = root .. "/claude"
+    assert.are.same(Transcript.encode(a), Transcript.encode(b))
+
+    local dir = Claude.root .. "/" .. Transcript.encode(a)
+    for name, cwd in pairs({ ["sa.jsonl"] = a, ["sb.jsonl"] = b }) do
+      Fixture.write(
+        dir .. "/" .. name,
+        vim.json.encode({ type = "mode", mode = "normal" })
+          .. "\n"
+          .. vim.json.encode({ type = "user", uuid = "u1", cwd = cwd, message = { role = "user", content = "hi" } })
+          .. "\n"
+      )
+    end
+    Transcript.clear_cache()
+
+    local sa, sb = Transcript.sources(a), Transcript.sources(b)
+    assert.are.same(1, #sa)
+    assert.are.same(1, #sb)
+    assert.is_not_nil(sa[1].file:find("sa.jsonl", 1, true))
+    assert.is_not_nil(sb[1].file:find("sb.jsonl", 1, true))
+  end)
+
+  it("finds the cwd even when the first entries do not carry one", function()
+    -- real Claude transcripts open with session metadata that has no cwd
+    local path = vim.fn.tempname() .. "/s.jsonl"
+    Fixture.write(
+      path,
+      vim.json.encode({ type = "ai-title" })
+        .. "\n"
+        .. vim.json.encode({ type = "mode", mode = "normal" })
+        .. "\n"
+        .. vim.json.encode({ type = "user", uuid = "u", cwd = "/some/project", message = { role = "user", content = "hi" } })
+        .. "\n"
+    )
+    assert.are.same("/some/project", Transcript.cwd_of(path))
+  end)
+
+  it("reports no cwd for a transcript that never records one", function()
+    local path = vim.fn.tempname() .. "/s.jsonl"
+    Fixture.write(path, vim.json.encode({ type = "mode", mode = "normal" }) .. "\n")
+    assert.is_nil(Transcript.cwd_of(path))
+  end)
+end)
+
+describe("review turn ids", function()
+  local Provider = require("sidekick.review.provider")
+
+  it("scopes a generated id to its session", function()
+    -- every session in a project is loaded at once, and turn ids key diffs,
+    -- comments, viewed marks and verdicts
+    local a = Provider.fallback_id({ session = "sess-A" }, 1)
+    local b = Provider.fallback_id({ session = "sess-B" }, 1)
+    assert.are_not.same(a, b)
+    assert.are.same(a, Provider.fallback_id({ session = "sess-A" }, 1))
+  end)
+end)
+
 describe("review.transcript caching", function()
   local fx ---@type sidekick.test.ReviewFixture
 

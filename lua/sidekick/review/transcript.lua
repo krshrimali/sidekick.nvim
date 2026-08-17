@@ -12,6 +12,19 @@ local Util = require("sidekick.util")
 
 local M = {}
 
+--- Compare filesystem paths after resolving platform aliases and symlinks.
+---@param a? string
+---@param b? string
+---@return boolean
+function M.same_path(a, b)
+  if not a or not b then
+    return false
+  end
+  a = vim.uv.fs_realpath(a) or vim.fs.normalize(a)
+  b = vim.uv.fs_realpath(b) or vim.fs.normalize(b)
+  return a == b
+end
+
 ---@class sidekick.review.Entry
 ---@field type string
 ---@field uuid? string

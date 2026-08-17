@@ -404,17 +404,27 @@ local defaults = {
   review = {
     enabled = true,
     --- How the review is shown:
-    --- * `float` — an overlay; leaves your window layout untouched
     --- * `tab`   — its own tabpage, like a full-screen editor for the review
+    --- * `float` — an overlay; leaves your window layout untouched
     --- * `split` — splits in the current tabpage
     ---@type "float"|"tab"|"split"
-    layout = "float",
+    layout = "tab",
     width = 0.94, -- fraction of the screen used by the overlay (float only)
     height = 0.9,
     sidebar_width = 38, -- columns for the turn/file tree
     -- number of context lines shown around each change
     context = 3,
-    -- automatically refresh while the overlay is open and Claude is writing
+    --- Show unresolved review comments in the file itself, so feedback is
+    --- visible when you go back to the code rather than only in the overlay.
+    ---@class sidekick.review.MarksConfig
+    signs = {
+      enabled = true,
+      text = "▌", -- sign column glyph
+      virtual_text = true, -- also show the comment at the end of the line
+      max_width = 60, -- how much of the comment to show
+      priority = 100,
+    },
+    -- automatically refresh while the review is open and the agent is writing
     watch = true,
   },
   copilot = {
@@ -933,7 +943,7 @@ Sidekick Review ~
   the CLI from a subdirectory or a symlinked path will not match.
 ```
 
-### The overlay
+### The review workspace
 
 ```text
 ╭─────────── turns ────────────╮╭──────────────────── review ────────────────────╮
@@ -952,7 +962,7 @@ Sidekick Review ~
 │                              │││   Switched to vim.log.levels.INFO.            │
 │                              ││╰───────────────────────────────────────────────│
 ╰──────────────────────────────╯╰────────────────────────────────────────────────╯
-  1 pending          c comment · r reply · S submit · x viewed · g? help · q quit
+  1 pending       <Tab> panes · ]c comments · c add · S submit · g? help · q quit
 ```
 
 - **Sidebar** — turns newest first. Expand one for its `Response`, its
@@ -966,15 +976,13 @@ said what — and it survives a theme with no colour:
 | | |
 |---|---|
 | `▌ you` | what you asked |
-| `▌ Claude Code` | the agent answering |
-| `╎ ` | thinking, an aside rather than something it said |
+| `▌ Final response · Claude Code` | the agent's final answer |
 | `╭ ● [c1] … draft` | a review comment, tagged and with its state |
 | `│ you` / `│ ↳ claude` | who wrote each message inside a thread |
 | `▏ lua ╴╴╴` | a fenced code block |
-| ` Edit` / `✗ Bash` | a tool call, and one that failed |
-- **Review pane** — the rendered response (markdown headings, lists, quotes and
-  syntax-highlighted code fences, with tool calls on one line each), a unified
-  diff with real line numbers, or the threads view.
+- **Review pane** — the final response (rendered as markdown), a changed-file
+  diff with real line numbers, or the threads view. Intermediate reasoning,
+  tool calls, and tool output stay out of the primary review surface.
 - **Threads** render inline, right under the line they are attached to.
 
 ### Layouts
@@ -982,15 +990,15 @@ said what — and it survives a theme with no colour:
 ```lua
 opts = {
   review = {
-    layout = "float", -- "float" | "tab" | "split"
+    layout = "tab", -- "tab" | "float" | "split"
   },
 }
 ```
 
 | Layout | What it does |
 |---|---|
-| `float` *(default)* | An overlay. Leaves your window layout completely untouched. |
-| `tab` | Its own tabpage — a full-screen editor for the review. |
+| `tab` *(default)* | Its own tabpage — an isolated full-screen review workspace. |
+| `float` | An overlay. Leaves your window layout completely untouched. |
 | `split` | Splits in the current tabpage, without stealing a window you were using. |
 
 Override per call with `require("sidekick.review").open({ layout = "tab" })`.
@@ -1173,7 +1181,6 @@ unit:
 | `<CR>` | sidebar | on a session group: fold or unfold it |
 | `s` | both | narrow to one session / widen back to the whole project |
 | `x` | both | toggle *viewed* for the response or file |
-| `T` | both | expand or collapse the agent's thinking |
 | `]c` / `[c` | review pane | next / previous comment |
 | `]h` / `[h` | review pane | next / previous hunk |
 | `gf` | review pane | open the real file at this line |

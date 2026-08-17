@@ -182,7 +182,7 @@ end
 
 --- `layout` is the one review option a typo makes silently wrong.
 function M.validate_layout()
-  local layout = (require("sidekick.config").review or {}).layout or "float"
+  local layout = (require("sidekick.config").review or {}).layout or "tab"
   if layout == "float" or layout == "tab" or layout == "split" then
     ok(("Layout is `%s`"):format(layout))
   else

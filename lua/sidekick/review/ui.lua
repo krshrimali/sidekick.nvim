@@ -1,8 +1,9 @@
----@brief The review overlay: sidebar + main pane + footer, and all interaction.
+---@brief The dedicated review workspace: sidebar + main pane + footer.
 ---
---- Floating windows are used on purpose. `cli.tab_scoped` binds a CLI session to
---- a tabpage, so opening the review in a new tab would talk to the wrong Claude.
---- Floats keep us in the current tab and leave the user's window layout intact.
+--- Reviews open in their own tabpage by default, keeping review-local keymaps
+--- and buffers isolated from the user's editing layout. When `cli.tab_scoped`
+--- is enabled, sends briefly run in the originating tab so they still reach the
+--- session that launched the review.
 local Config = require("sidekick.config")
 local Diff = require("sidekick.review.diff")
 local Model = require("sidekick.review.model")
@@ -43,7 +44,6 @@ end
 ---@field expanded table<string, boolean>
 ---@field collapsed table<string, boolean>
 ---@field expanded_threads table<string, boolean>
----@field show_thinking boolean
 ---@field sel_turn? string
 ---@field sel_key? string
 ---@field diffs table<string, sidekick.review.FileDiff[]>
@@ -499,7 +499,6 @@ function UI:ctx(width)
     sessions = self.sessions,
     collapsed = self.collapsed,
     expanded_threads = self.expanded_threads,
-    show_thinking = self.show_thinking,
     sel_turn = self.sel_turn,
     sel_key = self.sel_key,
     diffs = self.diffs,
@@ -1402,7 +1401,6 @@ function UI:help()
     "  d           delete the comment under the cursor",
     "  <Space>     resolve / unresolve the comment under the cursor",
     "  x           toggle viewed for the response or file",
-    "  T           expand / collapse the agent's thinking",
     "",
     "## Threads",
     "  The `Threads` node in the sidebar lists every conversation on a turn in",
@@ -1499,10 +1497,6 @@ function UI:keymaps(buf, which)
   map("n", "x", function()
     self:toggle_viewed()
   end, "toggle viewed")
-  map("n", "T", function()
-    self.show_thinking = not self.show_thinking
-    self:render({ keep_cursor = true })
-  end, "toggle thinking")
   map("n", "S", function()
     self:submit()
   end, "submit turn")
@@ -1772,10 +1766,10 @@ function M.open(opts)
   end
 
   local cwd = vim.fs.normalize(opts.cwd or vim.uv.cwd() or ".")
-  local layout = opts.layout or Config.review.layout or "float"
+  local layout = opts.layout or Config.review.layout or "tab"
   if layout ~= "float" and layout ~= "tab" and layout ~= "split" then
-    Util.warn(("sidekick.review: unknown layout %q, falling back to `float`"):format(tostring(layout)))
-    layout = "float"
+    Util.warn(("sidekick.review: unknown layout %q, falling back to `tab`"):format(tostring(layout)))
+    layout = "tab"
   end
 
   local self = setmetatable({
@@ -1785,7 +1779,6 @@ function M.open(opts)
     expanded = {},
     collapsed = {},
     expanded_threads = {},
-    show_thinking = false,
     diffs = {},
     closed = false,
     focus = "sidebar",
@@ -1821,7 +1814,7 @@ function M.open(opts)
   self:keymaps(self.sidebar.buf, "sidebar")
   self:keymaps(self.main.buf, "main")
 
-  -- closing any pane tears the whole overlay down
+  -- closing any pane tears the whole review workspace down
   self.autocmds[#self.autocmds + 1] = vim.api.nvim_create_autocmd("WinClosed", {
     group = Config.augroup,
     pattern = tostring(self.sidebar.win) .. "," .. tostring(self.main.win),

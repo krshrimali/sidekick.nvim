@@ -21,18 +21,18 @@ local M = {}
 ---@field turn? string turn id to select
 ---@field layout? sidekick.review.LayoutKind overrides `opts.review.layout`
 
---- Open the review overlay.
+--- Open the review workspace.
 ---@param opts? sidekick.review.Open
 function M.open(opts)
   return UI.open(opts)
 end
 
---- Close the review overlay.
+--- Close the review workspace.
 function M.close()
   UI.close()
 end
 
---- Toggle the review overlay.
+--- Toggle the review workspace.
 ---@param opts? sidekick.review.Open
 function M.toggle(opts)
   return UI.toggle(opts)

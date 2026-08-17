@@ -153,11 +153,11 @@ local defaults = {
   review = {
     enabled = true,
     --- How the review is shown:
-    --- * `float` — an overlay; leaves your window layout untouched
     --- * `tab`   — its own tabpage, like a full-screen editor for the review
+    --- * `float` — an overlay; leaves your window layout untouched
     --- * `split` — splits in the current tabpage
     ---@type "float"|"tab"|"split"
-    layout = "float",
+    layout = "tab",
     width = 0.94, -- fraction of the screen used by the overlay (float only)
     height = 0.9,
     sidebar_width = 38, -- columns for the turn/file tree
@@ -173,7 +173,7 @@ local defaults = {
       max_width = 60, -- how much of the comment to show
       priority = 100,
     },
-    -- automatically refresh while the overlay is open and Claude is writing
+    -- automatically refresh while the review is open and the agent is writing
     watch = true,
   },
   copilot = {

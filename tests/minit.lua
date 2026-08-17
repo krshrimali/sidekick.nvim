@@ -1,7 +1,9 @@
 #!/usr/bin/env -S nvim -l
 
 vim.env.LAZY_STDPATH = ".tests"
-vim.env.LAZY_PATH = vim.fs.normalize("~/projects/lazy.nvim")
+local installed_lazy = vim.fs.normalize(vim.fn.getcwd() .. "/.tests/data/nvim/lazy/lazy.nvim")
+vim.env.LAZY_PATH = vim.fn.isdirectory(installed_lazy) == 1 and installed_lazy
+  or vim.fs.normalize("~/projects/lazy.nvim")
 
 if vim.fn.isdirectory(vim.env.LAZY_PATH) == 1 then
   loadfile(vim.env.LAZY_PATH .. "/bootstrap.lua")()
@@ -25,7 +27,9 @@ require("lazy.minit").setup({
       config = function()
         local TS = require("nvim-treesitter")
         TS.setup({})
-        TS.install({ "python", "rust", "javascript", "typescript", "go", "lua" }, { summary = true }):wait()
+        if vim.env.LAZY_OFFLINE ~= "1" then
+          TS.install({ "python", "rust", "javascript", "typescript", "go", "lua" }, { summary = true }):wait()
+        end
       end,
     },
   },

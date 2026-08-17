@@ -150,7 +150,7 @@ function M.sources(cwd)
       local entry = Transcript.first_entry(file, stat)
       local meta = entry and entry.payload or nil
       local found = Transcript.cwd_of(file, stat)
-      local match = cwd == nil and found ~= nil or found == cwd
+      local match = cwd == nil and found ~= nil or Transcript.same_path(found, cwd)
 
       -- a session can move between workspaces mid-run, recording the new one in
       -- a `turn_context`. Reading the whole file to find that would undo the

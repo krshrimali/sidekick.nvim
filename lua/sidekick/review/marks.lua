@@ -1,6 +1,6 @@
 ---@brief Show unresolved review comments in the real file.
 ---
---- A comment left in the review overlay is invisible the moment you close it:
+--- A comment left in the review workspace is easy to miss after you close it:
 --- you open `lua/greet.lua`, and nothing says line 4 has feedback waiting on
 --- it. These marks close that loop — the file itself carries its open comments,
 --- the way a diff view would.
@@ -18,6 +18,15 @@ local group ---@type integer?
 
 M.SIGN = "SidekickReviewMark"
 
+--- Resolve platform aliases such as macOS `/var` and `/private/var` before
+--- comparing a stored transcript path with the name Neovim assigned a buffer.
+---@param path string
+---@return string
+local function canonical(path)
+  path = vim.fs.normalize(path)
+  return vim.uv.fs_realpath(path) or path
+end
+
 ---@return sidekick.review.MarksConfig
 local function opts()
   return (Config.review or {}).signs or {}
@@ -32,7 +41,11 @@ end
 ---@param path string
 ---@return sidekick.review.Store?
 function M.store_for(path)
-  local dir = vim.fs.dirname(vim.fs.normalize(path))
+  local loaded = Store.for_path(path)
+  if loaded then
+    return loaded
+  end
+  local dir = vim.fs.dirname(canonical(path))
   local seen = {} ---@type table<string, boolean>
 
   while dir and dir ~= "" and not seen[dir] do
@@ -118,7 +131,7 @@ end
 ---@return table<integer, sidekick.review.Comment[]>
 function M.for_file(path)
   local ret = {} ---@type table<integer, sidekick.review.Comment[]>
-  path = vim.fs.normalize(path)
+  path = canonical(path)
   if path == "" then
     return ret
   end
@@ -129,7 +142,7 @@ function M.for_file(path)
   end
   for _, c in ipairs(store:all()) do
     if c.target == "file" and c.file and c.lnum and c.status ~= "resolved" then
-      if vim.fs.normalize(c.file) == path then
+      if canonical(c.file) == path then
         local lnum = c.lnum
         ret[lnum] = ret[lnum] or {}
         table.insert(ret[lnum], c)
@@ -334,7 +347,14 @@ end
 
 function M.enable()
   if group then
-    return
+    -- `Config.setup()` can clear augroups while this module stays loaded. A
+    -- cached id is not proof that the callbacks still exist; recreate them so
+    -- comments continue to appear after setup is called again.
+    local ok, autocmds = pcall(vim.api.nvim_get_autocmds, { group = group })
+    if ok and #autocmds > 0 then
+      return
+    end
+    group = nil
   end
   group = vim.api.nvim_create_augroup("sidekick_review_marks", { clear = true })
 

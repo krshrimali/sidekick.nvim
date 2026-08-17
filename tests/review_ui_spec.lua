@@ -80,25 +80,26 @@ describe("review.ui", function()
     assert.is_true(warned)
   end)
 
-  it("renders the response with tools and collapsed thinking", function()
+  it("renders the final response without noisy implementation activity", function()
     local ui = Review.open({ cwd = fx.cwd })
     local main = text(ui.main.buf)
     assert.is_not_nil(main:find("Use vim.notify instead", 1, true))
-    assert.is_not_nil(main:find("Switching both call sites", 1, true))
-    assert.is_not_nil(main:find("thinking (2 lines", 1, true))
+    assert.is_not_nil(main:find("Final response", 1, true))
+    assert.is_not_nil(main:find("Done.", 1, true))
+    assert.is_nil(main:find("Switching both call sites", 1, true))
+    assert.is_nil(main:find("thinking (2 lines", 1, true))
     assert.is_nil(main:find("print() is not great", 1, true))
-    -- tool paths are shown relative to the project
-    assert.is_not_nil(main:find("lua/greet.lua", 1, true))
+    assert.is_nil(main:find("luacheck", 1, true))
     assert.is_nil(main:find(fx.cwd, 1, true))
   end)
 
-  it("toggles thinking with t", function()
+  it("does not map implementation activity over a normal key", function()
     local ui = Review.open({ cwd = fx.cwd })
-    vim.api.nvim_set_current_win(ui.main.win)
-    feed("T")
-    assert.is_not_nil(text(ui.main.buf):find("print() is not great", 1, true))
-    feed("T")
-    assert.is_nil(text(ui.main.buf):find("print() is not great", 1, true))
+    local mapped = false
+    for _, map in ipairs(vim.api.nvim_buf_get_keymap(ui.main.buf, "n")) do
+      mapped = mapped or map.lhs == "T"
+    end
+    assert.is_false(mapped)
   end)
 
   it("opens a file diff from the sidebar with <CR>", function()
@@ -475,7 +476,7 @@ describe("review.ui", function()
   end)
 
   it("places the footer clear of the pane borders", function()
-    local ui = Review.open({ cwd = fx.cwd })
+    local ui = Review.open({ cwd = fx.cwd, layout = "float" })
     local main = vim.api.nvim_win_get_config(ui.main.win)
     local footer = vim.api.nvim_win_get_config(ui.footer.win)
     -- a bordered float owns `row` (top border) through `row + height + 1`
@@ -1109,7 +1110,6 @@ describe("review legibility", function()
       anchor = { "Switching" },
       body = "please add a test",
     })
-    ui.show_thinking = true
     ui:render()
     return ui
   end
@@ -1119,7 +1119,7 @@ describe("review legibility", function()
     local ui = furnished()
     local out = text(ui.main.buf)
     assert.is_not_nil(out:find("▌ you", 1, true))
-    assert.is_not_nil(out:find("▌ Claude Code", 1, true))
+    assert.is_not_nil(out:find("▌ Final response · Claude Code", 1, true))
   end)
 
   it("does not let a prompt look like a comment", function()
@@ -1144,9 +1144,9 @@ describe("review legibility", function()
     assert.are_not.same(prompt, comment)
   end)
 
-  it("marks thinking as an aside", function()
+  it("keeps thinking out of the final response", function()
     local ui = furnished()
-    assert.is_not_nil(text(ui.main.buf):find("╎ print() is not great", 1, true))
+    assert.is_nil(text(ui.main.buf):find("print() is not great", 1, true))
   end)
 
   it("gives each element its own gutter glyph", function()
@@ -1537,13 +1537,16 @@ describe("review.ui layouts", function()
     fx.cleanup()
   end)
 
-  it("floats by default, leaving the window layout alone", function()
-    local before = #vim.api.nvim_list_wins()
+  it("opens in an isolated tabpage by default", function()
+    local origin = vim.api.nvim_get_current_tabpage()
     local ui = Review.open({ cwd = fx.cwd })
-    assert.are.same("float", ui.layout)
-    assert.are.same("editor", vim.api.nvim_win_get_config(ui.sidebar.win).relative)
+    assert.are.same("tab", ui.layout)
+    assert.are.same(2, #vim.api.nvim_list_tabpages())
+    assert.are.same(ui.tabpage, vim.api.nvim_get_current_tabpage())
+    assert.are_not.same(origin, ui.tabpage)
+    assert.are.same("", vim.api.nvim_win_get_config(ui.sidebar.win).relative)
     UI.close()
-    assert.are.same(before, #vim.api.nvim_list_wins())
+    assert.are.same(origin, vim.api.nvim_get_current_tabpage())
   end)
 
   it("opens in its own tabpage", function()
@@ -1622,9 +1625,9 @@ describe("review.ui layouts", function()
     Config.cli.tab_scoped = prev
   end)
 
-  it("falls back to floating for an unknown layout", function()
+  it("falls back to a dedicated tab for an unknown layout", function()
     local ui = Review.open({ cwd = fx.cwd, layout = "nonsense" })
-    assert.are.same("float", ui.layout)
+    assert.are.same("tab", ui.layout)
   end)
 
   it("resizes in every layout", function()

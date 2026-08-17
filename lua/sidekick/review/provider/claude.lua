@@ -95,7 +95,9 @@ local function collect(dir, cwd, out, check_cwd)
         local found = Transcript.cwd_of(file, stat)
         -- a transcript too short to have recorded a cwd is accepted only in
         -- the directory that already claims to be this project
-        local ok = (cwd == nil and found ~= nil) or found == cwd or (found == nil and not check_cwd)
+        local ok = (cwd == nil and found ~= nil)
+          or Transcript.same_path(found, cwd)
+          or (found == nil and not check_cwd)
         if ok then
           out[#out + 1] = {
             file = file,

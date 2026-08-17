@@ -80,6 +80,15 @@ function M.get(cwd)
   if cache[cwd] then
     return cache[cwd]
   end
+  -- The same directory can enter Neovim through different platform aliases
+  -- (`/var` and `/private/var` on macOS). Reuse its loaded store rather than
+  -- splitting comments and viewed state between two in-memory projects.
+  for known, store in pairs(cache) do
+    if Transcript.same_path(known, cwd) then
+      cache[cwd] = store
+      return store
+    end
+  end
   local self = setmetatable({
     cwd = cwd,
     file = M.path_for(cwd),
@@ -92,6 +101,20 @@ end
 --- Drop cached stores. Used by tests.
 function M.reset()
   cache = {}
+end
+
+--- Return an already loaded store whose project contains `path`.
+--- Real paths avoid platform aliases such as `/var` and `/private/var`.
+---@param path string
+---@return sidekick.review.Store?
+function M.for_path(path)
+  local real = vim.uv.fs_realpath(path) or vim.fs.normalize(path)
+  for cwd, store in pairs(cache) do
+    local root = vim.uv.fs_realpath(cwd) or vim.fs.normalize(cwd)
+    if real == root or vim.startswith(real, root .. "/") then
+      return store
+    end
+  end
 end
 
 --- Path of the state file for a project, without loading it.

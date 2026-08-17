@@ -35,7 +35,6 @@ local M = {}
 ---@field transcript sidekick.review.Transcript
 ---@field store sidekick.review.Store
 ---@field expanded table<string, boolean> turn id -> expanded
----@field show_thinking boolean
 ---@field sel_turn? string
 ---@field sel_key? string
 ---@field diffs table<string, sidekick.review.FileDiff[]> turn id -> diffs
@@ -666,15 +665,44 @@ function M.response(ctx, turn)
   add("", nil, { kind = "blank" })
 
   local provider = Provider.get(turn.provider)
-  local agent = M.icons.agent .. " " .. (provider and provider.label or "agent")
+  local agent = M.icons.agent .. " Final response · " .. (provider and provider.label or "agent")
   add(agent, { { 0, 1, "SidekickReviewAuthorAgent" }, { 1, -1, "SidekickReviewAuthorAgent" } }, {
     kind = "header",
     turn = turn.id,
   })
   add("", nil, { kind = "blank" })
 
+  -- Agent transcripts interleave commentary, reasoning and tool traffic with
+  -- the answer the user actually needs to review. Treat prose after the last
+  -- tool call as the final response. If a provider did not emit a trailing
+  -- answer, keep its last prose block as the best available summary. Changed
+  -- files remain first-class sidebar entries rather than being repeated here.
+  local last_tool = 0
   for bi, block in ipairs(turn.blocks) do
-    if block.kind == "text" and block.text then
+    if block.kind == "tool" then
+      last_tool = bi
+    end
+  end
+  local visible = {} ---@type table<integer, boolean>
+  for bi = last_tool + 1, #turn.blocks do
+    if turn.blocks[bi].kind == "text" then
+      visible[bi] = true
+    end
+  end
+  if not next(visible) then
+    for bi = #turn.blocks, 1, -1 do
+      if turn.blocks[bi].kind == "text" then
+        visible[bi] = true
+        break
+      end
+    end
+  end
+
+  for bi, block in ipairs(turn.blocks) do
+    if not visible[bi] then
+      -- implementation activity is intentionally omitted from the primary
+      -- review surface; file changes are available independently in the tree
+    elseif block.kind == "text" and block.text then
       -- prose is markdown: headings, lists, quotes and fenced code all get
       -- their own treatment, but one rendered line per source line so comment
       -- anchors (`b3:7`) keep pointing at the same thing
@@ -691,51 +719,13 @@ function M.response(ctx, turn)
         end
       end
       add("", nil, { kind = "blank" })
-    elseif block.kind == "thinking" and block.text then
-      local key = ("b%d:1"):format(bi)
-      if ctx.show_thinking then
-        -- an aside, not something the agent said: mark every line, so it
-        -- reads as thinking even where colour does not come through
-        add(M.icons.aside .. M.icons.thinking .. "thinking", { { 0, -1, "SidekickReviewThinking" } }, {
-          kind = "text",
-          turn = turn.id,
-          anchor_key = key,
-          anchor = "thinking",
-        })
-        for li, l in ipairs(vim.split(block.text, "\n", { plain = true })) do
-          add(M.icons.aside .. l, { { 0, -1, "SidekickReviewThinking" } }, {
-            kind = "text",
-            turn = turn.id,
-            anchor_key = ("b%d:%d"):format(bi, li),
-            anchor = l,
-          })
-        end
-        add("", nil, { kind = "blank" })
-      else
-        local n = select(2, block.text:gsub("\n", "")) + 1
-        local label = ("%s%sthinking (%d lines, `T` to expand)"):format(M.icons.aside, M.icons.thinking, n)
-        add(label, { { 0, -1, "SidekickReviewDim" } }, {
-          kind = "text",
-          turn = turn.id,
-          anchor_key = key,
-          anchor = "thinking",
-        })
-      end
-      flush(key)
-    elseif block.kind == "tool" and block.tool then
-      local tool = block.tool
-      local key = ("b%d:1"):format(bi)
-      local detail = trunc(M.tool_summary(tool, turn.cwd), math.max(W - #tool.name - 8, 8))
-      -- a failed tool call is worth spotting without relying on colour alone
-      local left = ("  %s%s "):format(tool.error and M.icons.failed or M.icons.tool, tool.name)
-      local text = left .. detail
-      local hl = {
-        { 0, #left, tool.error and "SidekickReviewToolError" or "SidekickReviewTool" },
-        { #left, -1, "SidekickReviewDim" },
-      } ---@type sidekick.review.HL[]
-      add(text, hl, { kind = "tool", turn = turn.id, anchor_key = key, anchor = tool.name .. " " .. detail })
-      flush(key)
     end
+  end
+
+  if not next(visible) then
+    add("No final response was recorded. Review the changed files in the sidebar.", {
+      { 0, -1, "SidekickReviewDim" },
+    }, { kind = "blank", turn = turn.id })
   end
 
   -- comments whose anchor line vanished still deserve to be seen
@@ -1101,7 +1091,7 @@ end
 function M.footer(ctx)
   local pending = ctx.store:pending_count()
   local left = pending > 0 and ("%s%d pending"):format(M.icons.comment, pending) or "no pending comments"
-  local right = "s sessions/filter · c comment · S submit · g? help · q quit"
+  local right = "<Tab> panes · ]c comments · c add · S submit · g? help · q quit"
   local gap = math.max(ctx.width - vim.fn.strdisplaywidth(left) - vim.fn.strdisplaywidth(right) - 2, 1)
   local text = " " .. left .. string.rep(" ", gap) .. right
   return {

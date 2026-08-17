@@ -7,6 +7,8 @@ vim.env.LAZY_PATH = vim.fn.isdirectory(installed_lazy) == 1 and installed_lazy
 
 if vim.fn.isdirectory(vim.env.LAZY_PATH) == 1 then
   loadfile(vim.env.LAZY_PATH .. "/bootstrap.lua")()
+elseif vim.env.LAZY_OFFLINE == "1" then
+  error("LAZY_OFFLINE=1 requires lazy.nvim at " .. vim.env.LAZY_PATH)
 else
   load(vim.fn.system("curl -s https://raw.githubusercontent.com/folke/lazy.nvim/main/bootstrap.lua"), "bootstrap.lua")()
 end

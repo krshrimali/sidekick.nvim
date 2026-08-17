@@ -28,8 +28,8 @@ describe("textobject context", function()
   ---@param lang string
   ---@return boolean
   local function has_parser(lang)
-    local ok, _ = pcall(vim.treesitter.get_parser, nil, lang)
-    return ok
+    local ok, parser = pcall(vim.treesitter.get_parser, nil, lang)
+    return ok and parser ~= nil
   end
 
   describe("function context", function()

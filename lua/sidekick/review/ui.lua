@@ -837,6 +837,7 @@ function UI:goto_anchor()
       return
     end
   end
+  Util.warn("sidekick.review: this comment belongs to hidden or unavailable activity; its quoted context remains in Threads")
 end
 
 --- Fold or unfold the thread under the cursor.
@@ -886,7 +887,7 @@ end
 
 ---@param delta integer
 ---@param kind "comment"|"hunk"|"file"
-function UI:jump(delta, kind)
+function UI:jump(delta, kind, quiet)
   local win = self.main.win
   if not vim.api.nvim_win_is_valid(win) then
     return
@@ -901,16 +902,46 @@ function UI:jump(delta, kind)
         if seen_current ~= it.comment then
           vim.api.nvim_win_set_cursor(win, { i, 0 })
           vim.cmd("normal! zz")
-          return
+          return true
         end
       elseif kind == "hunk" and it.kind == "hunk" then
         vim.api.nvim_win_set_cursor(win, { i, 0 })
         vim.cmd("normal! zt")
+        return true
+      end
+    end
+  end
+  if not quiet then
+    Util.info(("no %s %s here"):format(delta > 0 and "next" or "previous", kind))
+  end
+  return false
+end
+
+--- Jump to a comment in the current view, falling back to the turn-wide
+--- Threads view so comments on other files remain one keystroke away.
+---@param delta integer
+function UI:jump_comment(delta)
+  if self:jump(delta, "comment", true) then
+    return
+  end
+  if self.sel_key ~= Store.THREADS then
+    self.sel_key = Store.THREADS
+    self:render({ keep_cursor = true })
+    local from, to, step = 1, #self.main.lines, 1
+    if delta < 0 then
+      from, to, step = #self.main.lines, 1, -1
+    end
+    for i = from, to, step do
+      local item = self.main.lines[i] and self.main.lines[i].item
+      if item and item.kind == "comment" then
+        self:focus_pane("main")
+        vim.api.nvim_win_set_cursor(self.main.win, { i, 0 })
+        vim.cmd("normal! zz")
         return
       end
     end
   end
-  Util.info(("no %s %s here"):format(delta > 0 and "next" or "previous", kind))
+  Util.info(("no %s comment here"):format(delta > 0 and "next" or "previous"))
 end
 
 --- Submit the pending comments of the selected turn.
@@ -1440,14 +1471,14 @@ function UI:help()
   vim.bo[buf].modifiable = false
   vim.bo[buf].filetype = "markdown"
   vim.bo[buf].bufhidden = "wipe"
-  local width = 74
+  local width = math.max(math.min(74, vim.o.columns - 2), 10)
   local height = math.max(math.min(#lines, vim.o.lines - vim.o.cmdheight - 4), 5)
   local win = vim.api.nvim_open_win(buf, true, {
     relative = "editor",
     width = width,
     height = height,
-    row = math.floor((vim.o.lines - height) / 2),
-    col = math.floor((vim.o.columns - width) / 2),
+    row = math.max(math.floor((vim.o.lines - height) / 2), 0),
+    col = math.max(math.floor((vim.o.columns - width) / 2), 0),
     style = "minimal",
     border = "rounded",
     title = " help ",
@@ -1618,10 +1649,10 @@ function UI:keymaps(buf, which)
       self:goto_anchor()
     end, "jump to the anchored line")
     map("n", "]c", function()
-      self:jump(1, "comment")
+      self:jump_comment(1)
     end, "next comment")
     map("n", "[c", function()
-      self:jump(-1, "comment")
+      self:jump_comment(-1)
     end, "previous comment")
     map("n", "]h", function()
       self:jump(1, "hunk")
@@ -1704,16 +1735,27 @@ function UI:close()
     pcall(vim.api.nvim_del_autocmd, id)
   end
   self.autocmds = {}
-  for _, pane in ipairs({ self.sidebar, self.main, self.footer }) do
-    if pane and vim.api.nvim_win_is_valid(pane.win) then
-      pcall(vim.api.nvim_win_close, pane.win, true)
-    end
-  end
-
   -- a tabpage we opened is ours to clean up; one the user already had stays
-  if self.owns_tab and self.tabpage and vim.api.nvim_tabpage_is_valid(self.tabpage) then
-    if #vim.api.nvim_list_tabpages() > 1 then
-      pcall(vim.api.nvim_win_close, vim.api.nvim_tabpage_get_win(self.tabpage), true)
+  local closed_tab = false
+  if
+    self.owns_tab
+    and self.tabpage
+    and vim.api.nvim_tabpage_is_valid(self.tabpage)
+    and #vim.api.nvim_list_tabpages() > 1
+  then
+    pcall(vim.api.nvim_set_current_tabpage, self.tabpage)
+    closed_tab = pcall(vim.cmd.tabclose)
+  end
+  if not closed_tab then
+    for _, pane in ipairs({ self.sidebar, self.main, self.footer }) do
+      if pane and vim.api.nvim_win_is_valid(pane.win) then
+        pcall(vim.api.nvim_win_close, pane.win, true)
+        -- Neovim cannot close its final window. Wiping the final review buffer
+        -- still removes the pane and leaves a normal empty window behind.
+        if vim.api.nvim_win_is_valid(pane.win) and vim.api.nvim_buf_is_valid(pane.buf) then
+          pcall(vim.api.nvim_buf_delete, pane.buf, { force = true })
+        end
+      end
     end
   end
   if self.origin_tab and vim.api.nvim_tabpage_is_valid(self.origin_tab) then
@@ -1738,10 +1780,13 @@ end
 ---@return T
 function UI:at_origin(fn)
   local tab = vim.api.nvim_get_current_tabpage()
+  if Config.cli.tab_scoped and (not self.origin_tab or not vim.api.nvim_tabpage_is_valid(self.origin_tab)) then
+    Util.error("sidekick.review: the originating tab was closed; reopen the agent tab before submitting")
+    return nil
+  end
   local skip = not Config.cli.tab_scoped
     or not self.origin_tab
     or tab == self.origin_tab
-    or not vim.api.nvim_tabpage_is_valid(self.origin_tab)
   if skip then
     return fn()
   end
@@ -1817,7 +1862,7 @@ function M.open(opts)
   -- closing any pane tears the whole review workspace down
   self.autocmds[#self.autocmds + 1] = vim.api.nvim_create_autocmd("WinClosed", {
     group = Config.augroup,
-    pattern = tostring(self.sidebar.win) .. "," .. tostring(self.main.win),
+    pattern = table.concat({ self.sidebar.win, self.main.win, self.footer.win }, ","),
     callback = function()
       self:close()
     end,

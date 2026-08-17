@@ -1,6 +1,5 @@
 ---@module 'luassert'
 
-local Config = require("sidekick.config")
 local Fixture = require("tests.review_fixture")
 local Config = require("sidekick.config")
 local Render = require("sidekick.review.render")
@@ -414,6 +413,48 @@ describe("review.ui", function()
     assert.are.same(1, #reloaded:all())
     assert.are.same("keep me", reloaded:all()[1].body)
     assert.is_nil(vim.uv.fs_stat(reloaded.file .. ".tmp"))
+  end)
+
+  it("migrates persisted state across macOS path aliases", function()
+    local canonical = assert(vim.uv.fs_realpath(fx.cwd))
+    if canonical == fx.cwd then
+      return
+    end
+    local Transcript = require("sidekick.review.transcript")
+    local legacy = Store.root
+      .. "/"
+      .. ("%s-%s.json"):format(Transcript.encode(fx.cwd), vim.fn.sha256(fx.cwd):sub(1, 16))
+    Fixture.write(legacy, vim.json.encode({
+      version = Store.VERSION,
+      seq = 1,
+      comments = {
+        {
+          id = "c1",
+          turn = "t",
+          target = "response",
+          anchor_key = "b1:1",
+          anchor = {},
+          body = "persist across aliases",
+          status = "pending",
+          created = 0,
+          replies = {},
+        },
+      },
+      viewed = {},
+      verdicts = {},
+    }))
+    Store.reset()
+    local migrated = Store.get(canonical)
+    assert.are.same("persist across aliases", migrated:all()[1].body)
+    assert.is_nil(vim.uv.fs_stat(legacy))
+    assert.is_not_nil(vim.uv.fs_stat(migrated.file))
+  end)
+
+  it("selects the deepest loaded project store", function()
+    local parent = Store.get(fx.cwd)
+    local nested = Store.get(fx.cwd .. "/lua")
+    assert.are.same(nested, Store.for_path(fx.file))
+    assert.are_not.same(parent, Store.for_path(fx.file))
   end)
 
   it("keeps state separate for cwd names with the same Claude encoding", function()
@@ -1378,6 +1419,22 @@ describe("review delivery", function()
     assert.is_nil(Store.get(fx.cwd):verdict(ui.sel_turn))
   end)
 
+  it("does not send to another tab when the originating tab was closed", function()
+    local sent = stub_cli(true)
+    local prev = Config.cli.tab_scoped
+    Config.cli.tab_scoped = true
+    local ui = Review.open({ cwd = fx.cwd, layout = "tab" })
+    local origin = ui.origin_tab
+    vim.api.nvim_set_current_tabpage(origin)
+    vim.cmd.tabclose()
+
+    ui:deliver("review feedback", ui:turn(), function() end)
+
+    Config.cli.tab_scoped = prev
+    assert.are.same(0, #sent)
+    assert.is_not_nil((notices[#notices] or ""):find("originating tab was closed", 1, true))
+  end)
+
   it("addresses the review to the agent whose turn it is", function()
     local sent = stub_cli(true)
     local ui = Review.open({ cwd = fx.cwd })
@@ -1574,6 +1631,18 @@ describe("review.ui layouts", function()
     assert.are.same(0, panes())
   end)
 
+  it("tears down the workspace when the footer is closed", function()
+    local origin = vim.api.nvim_get_current_tabpage()
+    local ui = Review.open({ cwd = fx.cwd, layout = "tab" })
+    vim.api.nvim_win_close(ui.footer.win, true)
+    vim.wait(100, function()
+      return ui.closed
+    end)
+    assert.is_true(ui.closed)
+    assert.are.same(0, panes())
+    assert.are.same(origin, vim.api.nvim_get_current_tabpage())
+  end)
+
   it("splits the current tabpage without stealing a window", function()
     local before = #vim.api.nvim_list_wins()
     local ui = Review.open({ cwd = fx.cwd, layout = "split" })
@@ -1647,7 +1716,7 @@ end)
 
 describe("review.ui threads", function()
   local fx ---@type sidekick.test.ReviewFixture
-  local restore_cli, restore_notify
+  local restore_cli, restore_notify, notices
 
   ---@param ui sidekick.review.UI
   ---@param opts table
@@ -1668,7 +1737,7 @@ describe("review.ui threads", function()
   before_each(function()
     fx = Fixture.setup()
     _, restore_cli = Fixture.stub_cli()
-    _, restore_notify = Fixture.stub_notify()
+    notices, restore_notify = Fixture.stub_notify()
   end)
 
   after_each(function()
@@ -1790,6 +1859,43 @@ describe("review.ui threads", function()
     local at = ui.main.lines[vim.api.nvim_win_get_cursor(ui.main.win)[1]]
     assert.are.same("new:9", at.item.anchor_key)
   end)
+
+  it("finds comments in another item through comment navigation", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    comment(ui, { body = "on another file" })
+    ui.sel_key = Store.RESPONSE
+    ui:render()
+    vim.api.nvim_set_current_win(ui.main.win)
+
+    feed("]c")
+
+    assert.are.same(Store.THREADS, ui.sel_key)
+    local at = ui.main.lines[vim.api.nvim_win_get_cursor(ui.main.win)[1]]
+    assert.is_not_nil(at.item.comment)
+  end)
+
+  it("keeps hidden activity comments reachable from threads", function()
+    local ui = Review.open({ cwd = fx.cwd })
+    Store.get(fx.cwd):add({
+      turn = ui.sel_turn,
+      target = "response",
+      anchor_key = "b2:1",
+      anchor = {},
+      body = "about hidden activity",
+    })
+    ui.sel_key = Store.THREADS
+    ui:render()
+    vim.api.nvim_set_current_win(ui.main.win)
+    local row = row_where(ui.main, function(it)
+      return it.kind == "comment"
+    end)
+    vim.api.nvim_win_set_cursor(ui.main.win, { row, 0 })
+
+    feed("o")
+
+    assert.are.same(Store.RESPONSE, ui.sel_key)
+    assert.is_not_nil((notices[#notices] or ""):find("hidden or unavailable activity", 1, true))
+  end)
 end)
 
 describe("review.render", function()
@@ -1815,5 +1921,13 @@ describe("review.render", function()
     assert.are.same("2h", Render.ago(os.time() - 7200))
     assert.are.same("3d", Render.ago(os.time() - 86400 * 3))
     assert.are.same("", Render.ago(0))
+  end)
+
+  it("keeps footer hints within the available width", function()
+    local store = { pending_count = function() return 3 end }
+    for _, width in ipairs({ 20, 40, 60, 80, 120 }) do
+      local line = Render.footer({ store = store, width = width })
+      assert.is_true(vim.fn.strdisplaywidth(line.text) <= width, width)
+    end
   end)
 end)

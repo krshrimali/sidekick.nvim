@@ -216,7 +216,12 @@ function M.build(src)
             turns[#turns + 1] = current
           end
         elseif p.role == "assistant" and current and text ~= "" then
-          current.blocks[#current.blocks + 1] = { kind = "text", text = text, uuid = p.id or "" }
+          current.blocks[#current.blocks + 1] = {
+            kind = "text",
+            text = text,
+            uuid = p.id or "",
+            final = p.phase == "final_answer" or p.phase == "final",
+          }
         end
       elseif p.type == "reasoning" and current then
         -- `encrypted_content` is opaque; only the summary is ever readable
@@ -257,6 +262,7 @@ function M.build(src)
         P.apply_patch(turn, files, tool.id)
       end
     end
+    P.mark_final(turn.blocks)
   end
 
   return turns

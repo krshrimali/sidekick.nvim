@@ -245,6 +245,36 @@ describe("review.provider.codex", function()
     end
   end)
 
+  it("does not promote pre-tool progress to a final answer", function()
+    write(session())
+    local blocks = Model.load(cwd).turns[1].blocks
+    assert.is_false(vim.tbl_contains(vim.tbl_map(function(block)
+      return block.final == true
+    end, blocks), true))
+  end)
+
+  it("uses Codex's explicit final-answer phase", function()
+    local entries = session()
+    entries[#entries + 1] = {
+      type = "response_item",
+      timestamp = "2026-08-15T09:00:09.000Z",
+      payload = {
+        type = "message",
+        role = "assistant",
+        phase = "final_answer",
+        id = "final-1",
+        content = { { type = "output_text", text = "Changed `x` to 2." } },
+      },
+    }
+    write(entries)
+    local blocks = Model.load(cwd).turns[1].blocks
+    local finals = vim.tbl_filter(function(block)
+      return block.final == true
+    end, blocks)
+    assert.are.same(1, #finals)
+    assert.are.same("Changed `x` to 2.", finals[1].text)
+  end)
+
   it("turns an apply_patch into a reviewable file change", function()
     write(session())
     local turn = Model.load(cwd).turns[1]

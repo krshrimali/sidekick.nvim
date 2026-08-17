@@ -17,6 +17,7 @@ local M = {}
 ---@field text? string
 ---@field tool? sidekick.review.Tool
 ---@field uuid string
+---@field final? boolean true when this prose belongs to the provider's final answer
 
 ---@class sidekick.review.Tool
 ---@field id string

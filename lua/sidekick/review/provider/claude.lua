@@ -207,6 +207,7 @@ function M.build(src)
     for _, tool in ipairs(turn.tools) do
       P.apply_tool(turn, tool)
     end
+    P.mark_final(turn.blocks)
   end
 
   return turns

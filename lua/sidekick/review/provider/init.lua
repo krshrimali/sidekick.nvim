@@ -162,6 +162,35 @@ function M.turn(opts)
   }
 end
 
+--- Mark the last assistant message as the final answer when the provider did
+--- not supply an explicit phase. Text before the final tool is progress, not a
+--- closing answer; a tool-ending turn therefore has no final response.
+---@param blocks sidekick.review.Block[]
+function M.mark_final(blocks)
+  for _, block in ipairs(blocks) do
+    if block.final then
+      return
+    end
+  end
+  local last_tool, last_text = 0, 0
+  for i, block in ipairs(blocks) do
+    if block.kind == "tool" then
+      last_tool = i
+    elseif block.kind == "text" then
+      last_text = i
+    end
+  end
+  if last_text == 0 or (last_tool > 0 and last_text < last_tool) then
+    return
+  end
+  local uuid = blocks[last_text].uuid
+  for i, block in ipairs(blocks) do
+    if i > last_tool and block.kind == "text" and block.uuid == uuid then
+      block.final = true
+    end
+  end
+end
+
 --- Find or create the file entry a change belongs to.
 ---@param turn sidekick.review.Turn
 ---@param path string

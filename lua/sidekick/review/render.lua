@@ -672,29 +672,12 @@ function M.response(ctx, turn)
   })
   add("", nil, { kind = "blank" })
 
-  -- Agent transcripts interleave commentary, reasoning and tool traffic with
-  -- the answer the user actually needs to review. Treat prose after the last
-  -- tool call as the final response. If a provider did not emit a trailing
-  -- answer, keep its last prose block as the best available summary. Changed
-  -- files remain first-class sidebar entries rather than being repeated here.
-  local last_tool = 0
-  for bi, block in ipairs(turn.blocks) do
-    if block.kind == "tool" then
-      last_tool = bi
-    end
-  end
+  -- Providers classify the final answer while parsing. The renderer must not
+  -- promote progress commentary merely because it was the last prose seen.
   local visible = {} ---@type table<integer, boolean>
-  for bi = last_tool + 1, #turn.blocks do
-    if turn.blocks[bi].kind == "text" then
+  for bi, block in ipairs(turn.blocks) do
+    if block.kind == "text" and block.final == true then
       visible[bi] = true
-    end
-  end
-  if not next(visible) then
-    for bi = #turn.blocks, 1, -1 do
-      if turn.blocks[bi].kind == "text" then
-        visible[bi] = true
-        break
-      end
     end
   end
 
@@ -736,7 +719,7 @@ function M.response(ctx, turn)
   end
   if #orphans > 0 then
     add("", nil, { kind = "blank" })
-    add(" unanchored comments", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank" })
+    add(" comments on hidden or unavailable activity", { { 0, -1, "SidekickReviewDim" } }, { kind = "blank" })
     for _, c in ipairs(orphans) do
       vim.list_extend(lines, M.thread(c, W, { collapsed = M.is_collapsed(ctx, c) }))
     end
@@ -1091,9 +1074,28 @@ end
 function M.footer(ctx)
   local pending = ctx.store:pending_count()
   local left = pending > 0 and ("%s%d pending"):format(M.icons.comment, pending) or "no pending comments"
-  local right = "<Tab> panes · ]c comments · c add · S submit · g? help · q quit"
-  local gap = math.max(ctx.width - vim.fn.strdisplaywidth(left) - vim.fn.strdisplaywidth(right) - 2, 1)
+  local budget = math.max(ctx.width, 10)
+  local choices = {
+    "<Tab> panes · ]c comments · c add · S submit · g? help · q quit",
+    "]c comments · c add · S send · q quit",
+    "c add · S send · q quit",
+    "g? help · q quit",
+    "q quit",
+  }
+  local room = math.max(budget - vim.fn.strdisplaywidth(left) - 3, 0)
+  local right = ""
+  for _, choice in ipairs(choices) do
+    if vim.fn.strdisplaywidth(choice) <= room then
+      right = choice
+      break
+    end
+  end
+  if right == "" then
+    left = trunc(left, math.max(budget - 2, 1))
+  end
+  local gap = math.max(budget - vim.fn.strdisplaywidth(left) - vim.fn.strdisplaywidth(right) - 1, 1)
   local text = " " .. left .. string.rep(" ", gap) .. right
+  text = trunc(text, budget)
   return {
     text = text,
     hl = {

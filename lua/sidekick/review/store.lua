@@ -73,25 +73,61 @@ local function filename(cwd)
   return ("%s-%s.json"):format(Transcript.encode(cwd), vim.fn.sha256(cwd):sub(1, 16))
 end
 
+---@param cwd string
+---@return string
+local function canonical(cwd)
+  cwd = vim.fs.normalize(cwd)
+  return vim.uv.fs_realpath(cwd) or cwd
+end
+
+--- Known spellings of one project path, canonical first.
+---@param cwd string
+---@return string[]
+local function aliases(cwd)
+  cwd = vim.fs.normalize(cwd)
+  local ret, seen = {}, {} ---@type string[], table<string, boolean>
+  local function add(path)
+    if path ~= "" and not seen[path] then
+      seen[path] = true
+      ret[#ret + 1] = path
+    end
+  end
+  add(canonical(cwd))
+  add(cwd)
+  if vim.startswith(cwd, "/private/var/") or vim.startswith(cwd, "/private/tmp/") then
+    add(cwd:sub(9))
+  elseif vim.startswith(cwd, "/var/") or vim.startswith(cwd, "/tmp/") then
+    add("/private" .. cwd)
+  end
+  return ret
+end
+
 ---@param cwd? string
 ---@return sidekick.review.Store
 function M.get(cwd)
-  cwd = vim.fs.normalize(cwd or vim.uv.cwd() or ".")
+  local requested = vim.fs.normalize(cwd or vim.uv.cwd() or ".")
+  cwd = canonical(requested)
   if cache[cwd] then
     return cache[cwd]
   end
-  -- The same directory can enter Neovim through different platform aliases
-  -- (`/var` and `/private/var` on macOS). Reuse its loaded store rather than
-  -- splitting comments and viewed state between two in-memory projects.
-  for known, store in pairs(cache) do
-    if Transcript.same_path(known, cwd) then
-      cache[cwd] = store
-      return store
+  local file = M.path_for(cwd)
+  if not vim.uv.fs_stat(file) then
+    -- Migrate state written before project paths were canonicalized. Rename is
+    -- atomic and leaves the legacy file alone if the destination cannot be
+    -- created for any reason.
+    for _, alias in ipairs(aliases(requested)) do
+      local legacy = dir() .. "/" .. filename(alias)
+      if legacy ~= file and vim.uv.fs_stat(legacy) then
+        vim.fn.mkdir(dir(), "p")
+        if vim.uv.fs_rename(legacy, file) then
+          break
+        end
+      end
     end
   end
   local self = setmetatable({
     cwd = cwd,
-    file = M.path_for(cwd),
+    file = file,
   }, Store)
   self:load()
   cache[cwd] = self
@@ -108,13 +144,15 @@ end
 ---@param path string
 ---@return sidekick.review.Store?
 function M.for_path(path)
-  local real = vim.uv.fs_realpath(path) or vim.fs.normalize(path)
+  local real = canonical(path)
+  local best, best_len ---@type sidekick.review.Store?, integer?
   for cwd, store in pairs(cache) do
-    local root = vim.uv.fs_realpath(cwd) or vim.fs.normalize(cwd)
-    if real == root or vim.startswith(real, root .. "/") then
-      return store
+    local root = canonical(cwd)
+    if (real == root or vim.startswith(real, root .. "/")) and (not best_len or #root > best_len) then
+      best, best_len = store, #root
     end
   end
+  return best
 end
 
 --- Path of the state file for a project, without loading it.
@@ -123,7 +161,7 @@ end
 function M.path_for(cwd)
   -- must agree with `filename()`; a divergence here silently makes every
   -- persisted review undiscoverable after a restart
-  return dir() .. "/" .. filename(vim.fs.normalize(cwd))
+  return dir() .. "/" .. filename(canonical(cwd))
 end
 
 --- Whether a project has review state on disk (or loaded in this session).
@@ -134,10 +172,16 @@ end
 ---@return boolean
 function M.exists(cwd)
   cwd = vim.fs.normalize(cwd)
-  if cache[cwd] then
+  local key = canonical(cwd)
+  if cache[key] then
     return true
   end
-  return vim.uv.fs_stat(M.path_for(cwd)) ~= nil
+  for _, alias in ipairs(aliases(cwd)) do
+    if vim.uv.fs_stat(dir() .. "/" .. filename(alias)) then
+      return true
+    end
+  end
+  return false
 end
 
 ---@return sidekick.review.Data

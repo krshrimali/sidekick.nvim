@@ -15,6 +15,7 @@ This fork adds the following features on top of [upstream](https://github.com/fo
 |---|---|---|
 | **Go-to-file from terminal** | Jump to file paths (with line numbers and ranges) printed in the CLI terminal output. Parses formats like `path/file.rs:42:5`, `path/file.rs:10:20` (line range), and bare paths. Strips ANSI codes and resolves relative paths against the session's cwd. | `gf` (edit), `gh` (horizontal split), `gv` (vertical split) in normal mode inside the terminal |
 | **Tab-scoped CLI sessions** | Each Neovim tab gets its own independent CLI session. Toggling, showing, or sending context in one tab won't affect another tab's session. | `cli.tab_scoped = true` (default: `false`) |
+| **Review agent turns like pull requests** | Read each response as a PR: the prompt as the title, the prose as the description, and every file it touched as a reviewable diff. Leave inline comments, submit them as one message, and read the answers threaded under each comment. Works with **Claude Code** and **Codex**. | `:Sidekick review`, see [🔍 Review](#-review-agent-responses-like-pull-requests) |
 
 ## ✨ Features
 
@@ -32,6 +33,14 @@ This fork adds the following features on top of [upstream](https://github.com/fo
   - 🔄 **Session Persistence**: Keep your CLI sessions alive with `tmux` and `zellij` integration.
   - 📂 **Automatic File Watching**: Automatically reloads files in Neovim when they are modified by AI tools.
   - 🗂️ **Tab-Scoped Sessions**: Each Neovim tab can have its own independent CLI session with `tab_scoped = true`.
+
+- **🔍 Review Agent Responses Like Pull Requests**
+  - 🧾 **Every Turn is a PR**: Read the prompt as a title, the response as a description, and every changed file as a diff.
+  - 💬 **Inline Comments**: Comment on any response or diff line, then submit them all as one message.
+  - 🧵 **Threaded Replies**: Answers are threaded back under the comment they answer, and fold away once resolved.
+  - 🔁 **Exact Diffs**: Reconstructed from the recorded tool calls, so each turn shows its own change.
+  - 🖥️ **Float, Tab or Split**: Review as an overlay, or give it a whole tabpage.
+  - 🤖 **Claude Code and Codex**: Both CLIs' session formats are understood.
 
 - **🔌 Extensible and Customizable**
   - ⚙️ **Flexible Configuration**: Fine-tune every aspect of the plugin to your liking.
@@ -319,6 +328,9 @@ local defaults = {
         nav_down      = { "<c-j>", "nav_down"  , expr = true, desc = "navigate to the below window" },
         nav_up        = { "<c-k>", "nav_up"    , expr = true, desc = "navigate to the above window" },
         nav_right     = { "<c-l>", "nav_right" , expr = true, desc = "navigate to the right window" },
+        goto_file     = { "gf"   , "goto_file"        , mode = "n" , desc = "go to file under cursor" },
+        goto_file_h   = { "gh"   , "goto_file_hsplit" , mode = "n" , desc = "go to file in horizontal split" },
+        goto_file_v   = { "gv"   , "goto_file_vsplit" , mode = "n" , desc = "go to file in vertical split" },
       },
       ---@type fun(dir:"h"|"j"|"k"|"l")?
       --- Function that handles navigation between windows.
@@ -384,6 +396,36 @@ local defaults = {
     -- preferred picker for selecting files
     ---@alias sidekick.picker "snacks"|"telescope"|"fzf-lua"
     picker = "snacks", ---@type sidekick.picker
+  },
+  --- Review Claude's responses like pull requests.
+  --- Each turn (prompt + response + changed files) can be read, commented on
+  --- line by line, and sent back to the CLI. See `:Sidekick review`.
+  ---@class sidekick.review.Config
+  review = {
+    enabled = true,
+    --- How the review is shown:
+    --- * `tab`   — its own tabpage, like a full-screen editor for the review
+    --- * `float` — an overlay; leaves your window layout untouched
+    --- * `split` — splits in the current tabpage
+    ---@type "float"|"tab"|"split"
+    layout = "tab",
+    width = 0.94, -- fraction of the screen used by the overlay (float only)
+    height = 0.9,
+    sidebar_width = 38, -- columns for the turn/file tree
+    -- number of context lines shown around each change
+    context = 3,
+    --- Show unresolved review comments in the file itself, so feedback is
+    --- visible when you go back to the code rather than only in the overlay.
+    ---@class sidekick.review.MarksConfig
+    signs = {
+      enabled = true,
+      text = "▌", -- sign column glyph
+      virtual_text = true, -- also show the comment at the end of the line
+      max_width = 60, -- how much of the comment to show
+      priority = 100,
+    },
+    -- automatically refresh while the review is open and the agent is writing
+    watch = true,
   },
   copilot = {
     -- track copilot's status with `didChangeStatus`
@@ -798,6 +840,14 @@ Here's a list of the available commands:
 - `send`: Send a message to the current CLI tool.
 - `prompt`: Select a prompt to send to the current CLI tool.
 
+**Review (`review`)**
+
+- `open`: Open the review overlay.
+- `toggle`: Toggle the review overlay.
+- `close`: Close the review overlay.
+- `submit`: Send pending comments to the CLI without opening the UI.
+- `clear`: Drop stored comments (`all=true` for every turn).
+
 </details>
 
 <details><summary>
@@ -842,6 +892,336 @@ Here are some examples of how to use the `:Sidekick` command:
   ```
 
   </details>
+
+## 🔍 Review agent responses like pull requests
+
+Every turn — your prompt, the agent's answer, and the files it touched — is
+treated as a pull request you can read, comment on, and send back.
+Works with **Claude Code** and **Codex**.
+
+```vim
+:Sidekick review
+```
+
+```lua
+require("sidekick.review").toggle()
+```
+
+### How it works
+
+The review reads the CLI's own session transcript rather than scraping the
+terminal:
+
+| CLI | Transcript | Edits recorded as |
+|---|---|---|
+| Claude Code | `~/.claude/projects/<project>/<session>.jsonl` | `Edit` / `Write` / `MultiEdit` tool calls |
+| Codex | `~/.codex/sessions/<y>/<m>/<d>/rollout-*.jsonl` | `apply_patch` documents |
+
+Both carry enough to rebuild the *exact* edit, so diffs are reconstructed
+instead of guessed. Sidekick walks the turns backwards from the file on disk,
+undoing each recorded edit, which means **turn 3's diff shows turn 3's change
+even if turn 5 edited the same file again**. If the chain breaks — you
+hand-edited the file, or it was deleted — the diff is marked *approximate* and
+shown without line numbers rather than inventing them.
+
+> [!NOTE]
+> Other CLIs do not write a compatible transcript, so `:Sidekick review` will
+> report that it found none. Adding one is a matter of dropping a module into
+> `lua/sidekick/review/provider/`.
+
+**If no sessions are found**, run `:checkhealth sidekick`. It reports each CLI's
+storage separately, so you can tell "the CLI has never run here" from "there are
+sessions, just none for this directory":
+
+```text
+Sidekick Review ~
+- ✅ OK `Claude Code`: storage found at `~/.claude/projects`, but no session for this directory
+- ✅ OK `Codex CLI`: storage found at `~/.codex/sessions`, but no session for this directory
+- ⚠️ WARNING No sessions for `/tmp/scratch`.
+  Run `claude` or `codex` from this directory, then `:Sidekick review`.
+  Sessions are matched on the cwd recorded inside the transcript, so starting
+  the CLI from a subdirectory or a symlinked path will not match.
+```
+
+### The review workspace
+
+```text
+╭─────────── turns ────────────╮╭──────────────────── review ────────────────────╮
+│ Claude Review                ││lua/greet.lua                             +3 -2 │
+│ session 4f2a91c              ││ not reviewed · x toggle viewed · c comment     │
+│──────────────────────────────││────────────────────────────────────────────────│
+│▾ #2 Use vim.notify …  󱎫  1 3h││@@ -1,11 +1,12 @@                               │
+│    󰭹 Response              1 ││   3    3   function M.greet(name)              │
+│    󰭻 Threads (2)      1 open ││   4      -   print('hi ' .. name)              │
+│     lua/greet.lua     2 +3 -2││        4 +   vim.notify('hi ' .. name)         │
+│    lua/brand.lua        +3 -0││╭ ● [c1] ────────────────── 1 reply · needs a … │
+│▸ #1 What does this module do?│││ you  2h                                       │
+│                              │││   Should this respect `vim.log.levels`?       │
+│                              │││                                               │
+│                              │││ ↳ claude  1h                                  │
+│                              │││   Switched to vim.log.levels.INFO.            │
+│                              ││╰───────────────────────────────────────────────│
+╰──────────────────────────────╯╰────────────────────────────────────────────────╯
+  1 pending       <Tab> panes · ]c comments · c add · S submit · g? help · q quit
+```
+
+- **Sidebar** — turns newest first. Expand one for its `Response`, its
+  `Threads`, and every changed file with `+`/`-` counts, a viewed mark, and a
+  comment count. New files are marked, deleted ones say `deleted` rather than
+  reporting an empty change.
+
+Each kind of content carries its own marker, so you can tell at a glance who
+said what — and it survives a theme with no colour:
+
+| | |
+|---|---|
+| `▌ you` | what you asked |
+| `▌ Final response · Claude Code` | the agent's final answer |
+| `╭ ● [c1] … draft` | a review comment, tagged and with its state |
+| `│ you` / `│ ↳ claude` | who wrote each message inside a thread |
+| `▏ lua ╴╴╴` | a fenced code block |
+- **Review pane** — the final response (rendered as markdown), a changed-file
+  diff with real line numbers, or the threads view. Intermediate reasoning,
+  tool calls, and tool output stay out of the primary review surface.
+- **Threads** render inline, right under the line they are attached to.
+
+### Layouts
+
+```lua
+opts = {
+  review = {
+    layout = "tab", -- "tab" | "float" | "split"
+  },
+}
+```
+
+| Layout | What it does |
+|---|---|
+| `tab` *(default)* | Its own tabpage — an isolated full-screen review workspace. |
+| `float` | An overlay. Leaves your window layout completely untouched. |
+| `split` | Splits in the current tabpage, without stealing a window you were using. |
+
+Override per call with `require("sidekick.review").open({ layout = "tab" })`.
+
+> [!TIP]
+> With `cli.tab_scoped`, a CLI session belongs to a tabpage. The review
+> remembers which tabpage it was opened from and submits from there, so a
+> review living in its own tab still talks to the right agent.
+
+### Sessions
+
+**The whole repository is in view by default.** A project accumulates sessions —
+earlier `claude` runs, a `codex` run, a resumed one — and which session a change
+landed in is rarely what you remember. So the sidebar groups them, newest first:
+
+```text
+ Review
+ 3 sessions · 9 turns
+──────────────────────────────────────
+▾ Claude Code · 6daec8b3         6  5m
+  ▾ #6 how do I view all sessions?  5m
+      󰭹 Response
+  ▸ #5 so codex is now supported?  28m
+▾ Claude Code · 965daacd         1  9h
+▾ Codex CLI                      2  1h
+  ▸ #2 Saare bugs pehle resolve…   1h
+```
+
+`<CR>` on a group folds it. Every session in view is watched, so a turn landing
+in any of them shows up on its own.
+
+Press `s` to open the visible **sessions/filter** action and narrow to a single
+session when there is enough history that one run is all you care about; `s`
+again widens back. The picker labels each session by its opening prompt rather
+than its id:
+
+```text
+● Claude Code  how do I view all sessions?      6 turns · 31 files · Aug 15 23:39
+  Codex CLI    Iss poore repository ko review…  2 turns · 14 files · Aug 15 22:53
+```
+
+`:Sidekick review sessions` opens that picker without opening a review first.
+That picker searches sessions from every recorded project directory. Directory,
+Provider, and Sort appear as selectable rows at the top: move to one and press
+`<Enter>` to change it. Normal typing fuzzy-filters the visible session labels by
+prompt, provider, or path; no extra filter keymaps are required. `<C-q>` sends
+the selected session results to quickfix, where `<Enter>` opens that review.
+
+```lua
+require("sidekick.review").sessions()               --> every recorded session
+require("sidekick.review").pick()                   --> choose one, then open
+require("sidekick.review").open({ session = "4f2…" }) --> straight to one
+```
+
+Comments are stored per **project**, not per session, so they survive narrowing.
+
+### Round trip
+
+1. Put the cursor on a diff or response line and press `c` (works on a visual
+   range too). The quoted line is shown above the composer and can't be edited
+   into your comment.
+2. Press `S` to submit. Every pending comment is folded into **one** message,
+   each tagged `[c1]`, `[c2]`…, with the quoted code and file:line, and the
+   agent is asked to lead its replies with the same tag.
+3. When it answers, the tags are parsed back out and each reply is threaded
+   under the comment it answers; answered comments become *resolved*. The
+   overlay watches the transcript, so this happens without pressing anything
+   (`R` forces a refresh).
+4. Press `r` on a thread to follow up — it becomes pending again, and the next
+   submission carries the whole conversation so the agent has the context.
+
+### All changes
+
+A turn is the unit of *conversation*, not of change. A file edited across turns
+3, 5 and 7 has no single place showing what actually happened to it — but that
+cumulative diff is what you would look at before committing. Every session
+therefore carries an **All changes** entry above its turns:
+
+```text
+▾ Claude Code · 6daec8b3        10  3m
+  ▾ 󰦒 All changes           33 files
+       lua/sidekick/review/diff.lua   +473 -0
+       lua/sidekick/review/ui.lua    +1594 -0
+  ▸ #10 add a session rollup       3m
+```
+
+It is a turn as far as the rest of the review is concerned, so its files open
+as ordinary diffs and you can comment on them the same way. The diff runs from
+the file as it was when the session started to how it is now, so a line that a
+later turn replaced never shows up as an addition.
+
+### Comments in the code
+
+A comment is invisible the moment you close the review — you open the file and
+nothing says line 4 has feedback waiting on it. So unresolved comments are shown
+in the file itself:
+
+```text
+    3 function M.greet(name)
+▌   4   vim.notify('hi ' .. name)   Should this respect vim.log.levels?
+    5 end
+    6
+    7 function M.bye()
+▌   8   vim.notify('bye')   Why does bye() return a bool now? · awaiting reply
+▌   9   return true   Add a test for this · 1 reply
+```
+
+Drafts and sent comments are coloured differently, replies are counted, and
+resolved threads stop showing — finished business is just gutter noise.
+`require("sidekick.review").open_at()` jumps from the line into the
+conversation, with that thread unfolded.
+
+**Marks follow the code.** Line numbers go stale as soon as anyone edits the
+file, which is the normal case: you comment, the agent fixes it, everything
+below shifts. The text you commented on is the anchor, not the line number, so
+a mark moves with its code and the store is updated to match. When that text is
+gone — often because the agent changed exactly what you asked about — the
+comment stays at its last known line and says `code changed since` rather than
+pointing confidently at something unrelated. A guessed position is never
+written back.
+
+```lua
+opts = {
+  review = {
+    signs = {
+      enabled = true,
+      text = "▌",
+      virtual_text = true, -- also show the comment at end of line
+      max_width = 60,
+    },
+  },
+}
+```
+
+The project is resolved from the file, not from your cwd, so this works when
+you open a file from outside the directory the agent ran in.
+
+### Verdicts
+
+A review can carry a ruling, not just comments — the agent should be able to
+tell a suggestion from a blocker:
+
+| Key | Sends |
+|---|---|
+| `ga` | **Approved.** Works with no comments attached, which is often the point. |
+| `gr` | **Changes requested.** Refuses if nothing is pending — there would be nothing to block on. |
+| `S` | Comments only, no ruling. |
+
+The verdict is recorded per turn and shown in the sidebar (`✓` / `✗`), so a
+turn you have already ruled on reads as settled.
+
+### Threads
+
+A conversation that has been round-tripped a few times gets long, and several
+of them in one diff drown the code. So a thread is a first-class, collapsible
+unit:
+
+- **Resolved threads fold** to a one-line summary (`▸ ✓ [c1] why? · 2 replies ·
+  resolved`); anything still waiting on someone stays open.
+- `<CR>` or `za` folds and unfolds one, `zM` / `zR` all of them.
+- The **Threads** node in the sidebar lists every conversation on a turn in one
+  place, each labelled with the file and line it annotates. `o` jumps from a
+  thread to the code it is about.
+
+### Keymaps
+
+| Key | Where | Action |
+|---|---|---|
+| `<CR>` | sidebar | expand turn / open item and focus it |
+| `o` | sidebar | preview without leaving the sidebar |
+| `<Tab>` | both | switch panes |
+| `J` / `K` | both | next / previous item, previewing as you go |
+| `c` | review pane | comment on the line (or visual range) |
+| `r` | review pane | reply to the thread under the cursor |
+| `E` / `d` | review pane | edit / delete the comment under the cursor |
+| `<Space>` | review pane | resolve or unresolve the comment |
+| `<CR>` / `za` | review pane | fold or unfold the thread under the cursor |
+| `zM` / `zR` | review pane | fold or unfold every thread |
+| `o` | review pane | from a thread, jump to the line it annotates |
+| `<CR>` | sidebar | on a session group: fold or unfold it |
+| `s` | both | narrow to one session / widen back to the whole project |
+| `x` | both | toggle *viewed* for the response or file |
+| `]c` / `[c` | review pane | next / previous comment |
+| `]h` / `[h` | review pane | next / previous hunk |
+| `gf` | review pane | open the real file at this line |
+| `S` / `A` | both | submit this turn's comments / all pending comments |
+| `ga` / `gr` | both | approve / request changes |
+| `R` | both | refresh from the transcript |
+| `g?` | both | help |
+| `q` | both | close |
+
+The review buffer is read-only, so keys like `c`, `d` and `x` are free to
+rebind — they could not do anything anyway. **Motions are left alone**: `h`,
+`l`, `e`, `t`, `w`, `b`, `f` and friends all still move the cursor, which
+matters because the diff pane does not wrap. Use `<Tab>` to change panes.
+
+`E`, `r` and `<Space>` also work from the sidebar: they move to the review pane
+and onto a comment first, rather than doing nothing where there are no comments
+to act on.
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `:Sidekick review open` | open the overlay |
+| `:Sidekick review toggle` | toggle it |
+| `:Sidekick review open layout="tab"` | open in its own tabpage |
+| `:Sidekick review close` | close it |
+| `:Sidekick review sessions` | pick a session, then open the review on it |
+| `:Sidekick review submit` | send pending comments without opening the UI |
+| `:Sidekick review submit all=true` | send pending comments from every turn |
+| `:Sidekick review clear` | drop the latest turn's comments |
+| `:Sidekick review clear all=true` | drop every stored comment |
+
+Comments live in `stdpath("state")/sidekick/review/<project>.json`, so a review
+survives restarts.
+
+### Statusline
+
+```lua
+require("sidekick.review").status() --> " 3" when comments are pending, else nil
+require("sidekick.review").pending() --> number of pending comments
+```
 
 ## 📟 Statusline Integration
 

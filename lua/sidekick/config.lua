@@ -146,6 +146,36 @@ local defaults = {
     ---@alias sidekick.picker "snacks"|"telescope"|"fzf-lua"
     picker = "snacks", ---@type sidekick.picker
   },
+  --- Review Claude's responses like pull requests.
+  --- Each turn (prompt + response + changed files) can be read, commented on
+  --- line by line, and sent back to the CLI. See `:Sidekick review`.
+  ---@class sidekick.review.Config
+  review = {
+    enabled = true,
+    --- How the review is shown:
+    --- * `tab`   — its own tabpage, like a full-screen editor for the review
+    --- * `float` — an overlay; leaves your window layout untouched
+    --- * `split` — splits in the current tabpage
+    ---@type "float"|"tab"|"split"
+    layout = "tab",
+    width = 0.94, -- fraction of the screen used by the overlay (float only)
+    height = 0.9,
+    sidebar_width = 38, -- columns for the turn/file tree
+    -- number of context lines shown around each change
+    context = 3,
+    --- Show unresolved review comments in the file itself, so feedback is
+    --- visible when you go back to the code rather than only in the overlay.
+    ---@class sidekick.review.MarksConfig
+    signs = {
+      enabled = true,
+      text = "▌", -- sign column glyph
+      virtual_text = true, -- also show the comment at the end of the line
+      max_width = 60, -- how much of the comment to show
+      priority = 100,
+    },
+    -- automatically refresh while the review is open and the agent is writing
+    watch = true,
+  },
   copilot = {
     -- track copilot's status with `didChangeStatus`
     status = {
@@ -176,6 +206,8 @@ local state_dir = vim.fn.stdpath("state") .. "/sidekick"
 
 local config = vim.deepcopy(defaults) --[[@as sidekick.Config]]
 M.augroup = vim.api.nvim_create_augroup("sidekick", { clear = true })
+local setup_autocmds = {} ---@type integer[]
+local setup_generation = 0
 
 ---@param name string
 function M.state(name)
@@ -184,6 +216,8 @@ end
 
 ---@param opts? sidekick.Config
 function M.setup(opts)
+  setup_generation = setup_generation + 1
+  local generation = setup_generation
   config = vim.tbl_deep_extend("force", {}, vim.deepcopy(defaults), opts or {})
 
   vim.api.nvim_create_user_command("Sidekick", function(args)
@@ -195,19 +229,27 @@ function M.setup(opts)
     complete = function(_, line)
       return require("sidekick.commands").complete(line)
     end,
+    force = true,
   })
 
   vim.schedule(function()
+    if generation ~= setup_generation then
+      return
+    end
+    for _, id in ipairs(setup_autocmds) do
+      pcall(vim.api.nvim_del_autocmd, id)
+    end
+    setup_autocmds = {}
     vim.fn.mkdir(state_dir, "p")
     M.set_hl()
 
-    vim.api.nvim_create_autocmd("ColorScheme", {
+    setup_autocmds[#setup_autocmds + 1] = vim.api.nvim_create_autocmd("ColorScheme", {
       group = M.augroup,
       callback = M.set_hl,
     })
 
     -- Track when a window was last focused
-    vim.api.nvim_create_autocmd({ "WinEnter" }, {
+    setup_autocmds[#setup_autocmds + 1] = vim.api.nvim_create_autocmd({ "WinEnter" }, {
       group = M.augroup,
       callback = function()
         local win = vim.api.nvim_get_current_win()
@@ -215,11 +257,18 @@ function M.setup(opts)
       end,
     })
 
-    if M.nes.enabled ~= false then
-      require("sidekick.nes").enable()
-    end
+    require("sidekick.nes").enable(M.nes.enabled ~= false)
 
     require("sidekick.status").setup()
+
+    -- setup() can be called again with different options, so this has to be
+    -- able to turn marks off as well as on
+    local marks = require("sidekick.review.marks")
+    if M.review.enabled ~= false and (M.review.signs or {}).enabled ~= false then
+      marks.enable()
+    else
+      marks.disable()
+    end
 
     M.validate("cli.win.layout", { "float", "left", "bottom", "top", "right" })
     M.validate("cli.mux.backend", { "tmux", "zellij" })
@@ -298,6 +347,53 @@ function M.set_hl()
     LocNum = "@attribute",
     LocRow = "SidekickLocDelim",
     LocCol = "SidekickLocDelim",
+    -- review overlay
+    ReviewNormal = "NormalFloat",
+    ReviewBorder = "FloatBorder",
+    ReviewCursorLine = "CursorLine",
+    ReviewTitle = "Title",
+    ReviewText = "Normal",
+    ReviewDim = "Comment",
+    ReviewSep = "WinSeparator",
+    ReviewTurn = "Special",
+    ReviewTurnSel = "Title",
+    ReviewSelected = "Title",
+    ReviewSession = "Directory",
+    ReviewMarkText = "DiagnosticVirtualTextWarn",
+    ReviewViewed = "Comment",
+    ReviewStat = "Number",
+    ReviewPending = "DiagnosticWarn",
+    ReviewSent = "DiagnosticInfo",
+    ReviewResolved = "DiagnosticOk",
+    ReviewComment = "Normal",
+    ReviewCommentBorder = "Delimiter",
+    ReviewReply = "Normal",
+    ReviewReplyHead = "DiagnosticInfo",
+    ReviewQuote = "Comment",
+    ReviewThinking = "Comment",
+    ReviewTool = "Function",
+    ReviewToolError = "DiagnosticError",
+    ReviewHunk = "Folded",
+    ReviewLineNr = "LineNr",
+    ReviewDiffAdd = "DiffAdd",
+    ReviewDiffDelete = "DiffDelete",
+    ReviewDiffContext = "Normal",
+    ReviewWarn = "DiagnosticWarn",
+    -- markdown prose in the response view
+    ReviewMdH1 = "@markup.heading.1.markdown",
+    ReviewMdH2 = "@markup.heading.2.markdown",
+    ReviewMdBold = "@markup.strong",
+    ReviewMdLink = "@markup.link",
+    ReviewMdCode = "@markup.raw.markdown_inline",
+    ReviewMdCodeBlock = "Normal",
+    ReviewMdFence = "Comment",
+    ReviewMdQuote = "@markup.quote",
+    ReviewMdBullet = "@markup.list",
+    -- threads
+    ReviewThreadCollapsed = "Comment",
+    ReviewAuthorYou = "Special",
+    ReviewAuthorAgent = "Function",
+    ReviewPrompt = "Comment",
   }
   for from, to in pairs(links) do
     vim.api.nvim_set_hl(0, "Sidekick" .. from, { link = to, default = true })

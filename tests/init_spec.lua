@@ -47,4 +47,17 @@ describe("init module", function()
 
     Nes.have, Nes.jump, Nes.apply = original_have, original_jump, original_apply
   end)
+
+  it("allows setup to be called repeatedly without duplicate autocmds", function()
+    local Config = require("sidekick.config")
+    Config.setup({ nes = { enabled = false } })
+    vim.wait(20)
+    local first = #vim.api.nvim_get_autocmds({ group = Config.augroup })
+    Config.setup({ nes = { enabled = false } })
+    vim.wait(20)
+    assert.are.same(first, #vim.api.nvim_get_autocmds({ group = Config.augroup }))
+    assert.are.same(2, vim.fn.exists(":Sidekick"))
+    Config.setup()
+    vim.wait(20)
+  end)
 end)

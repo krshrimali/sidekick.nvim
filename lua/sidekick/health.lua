@@ -86,6 +86,8 @@ function M.check()
     end
   end
 
+  M.review()
+
   start("Sidekick AI CLI Tools")
   local tools = require("sidekick.config").tools()
   local tool_names = vim.tbl_keys(tools) ---@type string[]
@@ -97,6 +99,94 @@ function M.check()
     else
       warn("`" .. tool.name .. "` is not installed")
     end
+  end
+end
+
+--- Diagnose the review feature.
+---
+--- The failure everyone hits is "no transcript found", and by itself that says
+--- nothing about *why*: the CLI may never have run here, the storage directory
+--- may be somewhere else, or the sessions may all belong to a different
+--- project. So report each of those separately.
+function M.review()
+  start("Sidekick Review")
+
+  local Config_ = require("sidekick.config")
+  if Config_.review and Config_.review.enabled == false then
+    warn("Review is disabled (`opts.review.enabled = false`)")
+    return
+  end
+
+  local Provider = require("sidekick.review.provider")
+  local Transcript = require("sidekick.review.transcript")
+  local cwd = vim.fs.normalize(vim.uv.cwd() or ".")
+
+  local total = 0
+  for _, provider in ipairs(Provider.all()) do
+    local dir = provider.name == "claude" and provider.projects_dir() or provider.sessions_dir()
+    local short = vim.fn.fnamemodify(dir, ":~")
+
+    if not vim.uv.fs_stat(dir) then
+      warn(("`%s`: no session storage at `%s` — has the CLI run on this machine?"):format(provider.label, short))
+    else
+      local found, err = pcall(provider.sources, cwd)
+      if not found then
+        error(("`%s`: failed to scan `%s`: %s"):format(provider.label, short, tostring(err)))
+      else
+        local sources = err --[[@as sidekick.review.Source[] ]]
+        total = total + #sources
+        if #sources > 0 then
+          ok(("`%s`: %d session%s for this directory"):format(provider.label, #sources, #sources == 1 and "" or "s"))
+        else
+          ok(("`%s`: storage found at `%s`, but no session for this directory"):format(provider.label, short))
+        end
+      end
+    end
+  end
+
+  if total == 0 then
+    warn(
+      "No sessions for `"
+        .. vim.fn.fnamemodify(cwd, ":~")
+        .. "`.\nRun `claude` or `codex` from this directory, then `:Sidekick review`."
+        .. "\nSessions are matched on the cwd recorded inside the transcript, so starting"
+        .. "\nthe CLI from a subdirectory or a symlinked path will not match."
+    )
+    return
+  end
+
+  -- the newest session is what `:Sidekick review` opens, so verify it parses
+  local src = Transcript.latest(cwd)
+  if not src then
+    return
+  end
+  local built, tr = pcall(require("sidekick.review.model").build, src)
+  if not built then
+    error(("Failed to parse `%s`: %s"):format(vim.fn.fnamemodify(src.file, ":~"), tostring(tr)))
+  elseif #tr.turns == 0 then
+    warn("The newest session has no reviewable turns yet")
+  else
+    ok(("Newest session parses: %d turn%s"):format(#tr.turns, #tr.turns == 1 and "" or "s"))
+  end
+
+  local store = require("sidekick.review.store").get(cwd)
+  local pending = store:pending_count()
+  if pending > 0 then
+    ok(("%d comment%s pending in `%s`"):format(pending, pending == 1 and "" or "s", vim.fn.fnamemodify(store.file, ":~")))
+  else
+    ok("No pending review comments")
+  end
+
+  M.validate_layout()
+end
+
+--- `layout` is the one review option a typo makes silently wrong.
+function M.validate_layout()
+  local layout = (require("sidekick.config").review or {}).layout or "tab"
+  if layout == "float" or layout == "tab" or layout == "split" then
+    ok(("Layout is `%s`"):format(layout))
+  else
+    error(("Invalid `opts.review.layout = %q` — expected `float`, `tab` or `split`"):format(tostring(layout)))
   end
 end
 

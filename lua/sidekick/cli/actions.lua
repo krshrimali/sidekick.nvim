@@ -146,25 +146,64 @@ local function parse_file_path(line, cursor_col, cwd)
   return best_file, best_lnum, best_col, best_end_lnum
 end
 
+--- Find a suitable target window for opening files (non-terminal window)
+---@return integer? win_id of the target window, or nil if none found
+local function find_target_window()
+  local current_win = vim.api.nvim_get_current_win()
+
+  -- Try the previous window first (window before terminal was focused)
+  local prev_win = vim.fn.win_getid(vim.fn.winnr('#'))
+  if prev_win ~= 0 and prev_win ~= current_win and vim.api.nvim_win_is_valid(prev_win) then
+    local bufnr = vim.api.nvim_win_get_buf(prev_win)
+    local buftype = vim.bo[bufnr].buftype
+    -- Accept normal file buffers or empty buftype
+    if buftype == '' or buftype == 'acwrite' then
+      return prev_win
+    end
+  end
+
+  -- Find any non-terminal, non-special window
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if win ~= current_win and vim.api.nvim_win_is_valid(win) then
+      local bufnr = vim.api.nvim_win_get_buf(win)
+      local buftype = vim.bo[bufnr].buftype
+      if buftype == '' or buftype == 'acwrite' then
+        return win
+      end
+    end
+  end
+
+  return nil
+end
+
 ---@param open_cmd string vim command to open the file ("edit", "split", "vsplit")
 ---@param t sidekick.cli.Terminal
 local function goto_file_with(open_cmd, t)
+  -- Capture terminal buffer context BEFORE stopinsert/schedule to avoid race conditions
+  local term_win = vim.api.nvim_get_current_win()
+  local cursor = vim.api.nvim_win_get_cursor(term_win)
+  local row = cursor[1]
+  local col = cursor[2] -- 0-indexed
+  local line = vim.api.nvim_buf_get_lines(0, row - 1, row, false)[1] or ""
+  local cwd = t.cwd or vim.fn.getcwd()
+
   vim.cmd.stopinsert()
   vim.schedule(function()
-    local cursor = vim.api.nvim_win_get_cursor(0)
-    local row = cursor[1]
-    local col = cursor[2] -- 0-indexed
-    local line = vim.api.nvim_buf_get_lines(0, row - 1, row, false)[1] or ""
-    local cwd = t.cwd or vim.fn.getcwd()
-
     local file, lnum, file_col, end_lnum = parse_file_path(line, col, cwd)
     if not file then
       vim.notify("No file path found on this line", vim.log.levels.WARN)
       return
     end
 
-    -- Navigate to the previous editor window
-    vim.cmd.wincmd("p")
+    -- Find and switch to a suitable target window (main editor view)
+    local target_win = find_target_window()
+    if target_win then
+      vim.api.nvim_set_current_win(target_win)
+    else
+      -- Fallback to previous window if no suitable window found
+      vim.cmd.wincmd("p")
+    end
+
     vim.cmd(open_cmd .. " " .. vim.fn.fnameescape(file))
     if lnum then
       vim.api.nvim_win_set_cursor(0, { lnum, (file_col or 1) - 1 })

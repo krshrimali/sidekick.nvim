@@ -42,7 +42,7 @@ local defaults = {
       config = function(terminal) end,
       wo = {}, ---@type vim.wo
       bo = {}, ---@type vim.bo
-      layout = "right", ---@type "float"|"left"|"bottom"|"top"|"right"
+      layout = "right", ---@type "float"|"left"|"bottom"|"top"|"right"|"tab"
       --- Options used when layout is "float"
       ---@type vim.api.keyset.win_config
       float = {
@@ -270,7 +270,7 @@ function M.setup(opts)
       marks.disable()
     end
 
-    M.validate("cli.win.layout", { "float", "left", "bottom", "top", "right" })
+    M.validate("cli.win.layout", { "float", "left", "bottom", "top", "right", "tab" })
     M.validate("cli.mux.backend", { "tmux", "zellij" })
     M.validate("cli.mux.create", { "terminal", "window", "split" })
     M.validate("nes.diff.show", { "always", "cursor" })

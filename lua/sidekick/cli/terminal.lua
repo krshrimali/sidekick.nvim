@@ -18,6 +18,8 @@ local Util = require("sidekick.util")
 ---@field job? integer
 ---@field buf? integer
 ---@field win? integer
+---@field tab? integer tabpage the terminal lives in (layout == "tab")
+---@field origin_tab? integer tabpage the terminal was opened from (layout == "tab")
 ---@field scrollback? sidekick.cli.Scrollback
 ---@field normal_mode? boolean
 local M = {}
@@ -58,7 +60,11 @@ local wo = {
   statuscolumn = "", -- left padding interferes with terminal reflow, so disable
   spell = false,
   winbar = "",
-  wrap = false,
+  -- wrap long lines so scrollback history (which libvterm does NOT reflow on
+  -- resize) stays readable instead of being truncated off the right edge when
+  -- the split is made narrower. The live screen is always re-wrapped to the
+  -- window width, so this never causes phantom wraps there.
+  wrap = true,
 }
 
 ---@type vim.bo
@@ -352,6 +358,30 @@ function M:open_win()
     return
   end
 
+  if self.opts.layout == "tab" then
+    -- open the terminal in its own tabpage, leaving the user's window layout
+    -- untouched. `open_win` must not steal focus (it's called from show/send),
+    -- so we return to the originating tab after creating ours.
+    self.origin_tab = vim.api.nvim_get_current_tabpage()
+    vim.cmd("noautocmd tabnew")
+    self.tab = vim.api.nvim_get_current_tabpage()
+    self.win = vim.api.nvim_get_current_win()
+    -- `tabnew` hands us a scratch window; take it over with the terminal buffer
+    -- and drop the scratch buffer it created.
+    local scratch = vim.api.nvim_win_get_buf(self.win)
+    vim.api.nvim_win_set_buf(self.win, self.buf)
+    if scratch ~= self.buf and vim.api.nvim_buf_is_valid(scratch) then
+      pcall(vim.api.nvim_buf_delete, scratch, { force = true })
+    end
+    vim.w[self.win].sidekick_cli = self.tool
+    vim.w[self.win].sidekick_session_id = self.id
+    self:wo()
+    if vim.api.nvim_tabpage_is_valid(self.origin_tab) then
+      vim.api.nvim_set_current_tabpage(self.origin_tab)
+    end
+    return
+  end
+
   local is_float = self.opts.layout == "float"
 
   ---@type vim.api.keyset.win_config
@@ -402,8 +432,12 @@ function M:blur()
   if not self:is_focused() then
     return
   end
-  vim.cmd.wincmd("p")
   vim.cmd.stopinsert()
+  if self.opts.layout == "tab" and self.origin_tab and vim.api.nvim_tabpage_is_valid(self.origin_tab) then
+    vim.api.nvim_set_current_tabpage(self.origin_tab)
+  else
+    vim.cmd.wincmd("p")
+  end
 end
 
 function M:is_focused()

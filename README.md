@@ -296,7 +296,7 @@ local defaults = {
       config = function(terminal) end,
       wo = {}, ---@type vim.wo
       bo = {}, ---@type vim.bo
-      layout = "right", ---@type "float"|"left"|"bottom"|"top"|"right"
+      layout = "right", ---@type "float"|"left"|"bottom"|"top"|"right"|"tab"
       --- Options used when layout is "float"
       ---@type vim.api.keyset.win_config
       float = {

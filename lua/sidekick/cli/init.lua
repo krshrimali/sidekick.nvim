@@ -1,8 +1,15 @@
 local Context = require("sidekick.cli.context")
+local Config = require("sidekick.config")
+local Session = require("sidekick.cli.session")
 local State = require("sidekick.cli.state")
 local Util = require("sidekick.util")
 
 local M = {}
+
+---@class sidekick.cli.Start: sidekick.cli.Show
+---@field cwd? string explicit working directory for a new session
+---@field backend? string session backend override
+---@field on_ready? fun(state:sidekick.cli.State) called after the session is attached
 
 ---@class sidekick.Prompt
 ---@field msg string
@@ -81,6 +88,39 @@ function M.select(opts)
       end
     end
   require("sidekick.cli.ui.select").select(opts)
+end
+
+--- Start or attach a tool in an explicit working directory.
+---
+--- Unlike `select()`, this never derives the cwd from whichever window happens
+--- to be current. Integrations can therefore bind an agent to a review worktree
+--- without changing the user's global or tab-local directory.
+---@param opts sidekick.cli.Start|string
+---@return sidekick.cli.State?
+function M.start(opts)
+  opts = type(opts) == "string" and { name = opts } or opts or {}
+  local name = opts.name or "claude"
+  local tool = Config.get_tool(name)
+  if not tool then
+    Util.error("Unknown CLI tool: " .. name)
+    return
+  end
+  if vim.fn.executable(tool.cmd[1]) ~= 1 then
+    Util.error("CLI tool is not installed: " .. name)
+    return
+  end
+  Session.setup()
+  local session = Session.new({
+    tool = tool,
+    cwd = opts.cwd,
+    backend = opts.backend,
+  })
+  local state = State.get_state(session)
+  state = State.attach(state, { show = true, focus = opts.focus })
+  if opts.on_ready then
+    opts.on_ready(state)
+  end
+  return state
 end
 
 ---@param opts? sidekick.cli.Show
